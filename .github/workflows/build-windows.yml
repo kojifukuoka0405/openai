@@ -1,0 +1,40 @@
+name: Build Windows App
+
+# Windows 用の単一実行ファイル (.exe) をクラウドでビルドする。
+# - 手動実行（Actions タブ → Run workflow）
+# - タグ push（v* ）時に Release へ添付
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --noconfirm pptx_vectorizer.spec
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pptx-vectorizer-windows
+          path: dist/pptx-vectorizer.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/pptx-vectorizer.exe

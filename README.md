@@ -62,6 +62,24 @@ python -m pptx_vectorizer.gui
 
 ファイルを選んで「変換実行」を押すだけです。
 
+### Windows アプリ (.exe) として使う
+
+インストール不要でダブルクリック起動できる単一実行ファイルを作れます。方法は2つ:
+
+**A. 自分の Windows でビルドする**
+
+リポジトリを取得し、`build_windows.bat` をダブルクリック（または実行）します。
+依存と PyInstaller を入れて `dist\pptx-vectorizer.exe` を生成します。
+以後はその exe をダブルクリックするだけでアプリが起動します。
+
+**B. クラウド (GitHub Actions) でビルドして DL する**（Windows 不要）
+
+1. GitHub の **Actions** タブ → **Build Windows App** → **Run workflow**
+2. 完了後、実行結果の **Artifacts** から `pptx-vectorizer-windows` をダウンロード
+3. 中の `pptx-vectorizer.exe` を Windows で起動
+
+`v1.0.0` のようなタグを push すると、自動で Release に exe が添付されます。
+
 ### Python API
 
 ```python
