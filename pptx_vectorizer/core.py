@@ -171,11 +171,56 @@ def _add_shape_for_detection(
     height = Emu(int(bh * sy))
 
     enum = _PPTX_SHAPE_ENUM.get(det.kind, MSO_SHAPE.RECTANGLE)
-    shape = slide_shapes.add_shape(enum, left, top, width, height)
+    shape = slide_shapes.add_shape(enum, left, top, max(1, width), max(1, height))
     shape.fill.solid()
     shape.fill.fore_color.rgb = RGBColor(*det.fill)
     shape.line.color.rgb = RGBColor(*det.line)
     shape.name = f"Vectorized-{det.kind}"
+    return shape
+
+
+def detect_shapes_in_region(
+    image_bgr: np.ndarray,
+    region_px: Tuple[int, int, int, int],
+    **detect_kwargs,
+) -> List[DetectedShape]:
+    """画像の指定矩形領域だけを対象に図形を検出し、座標を画像全体系に戻して返す。
+
+    範囲を限定することで、画像全体の自動検出より誤検出が大幅に減る。
+    region_px は画像ピクセル座標系の (x, y, w, h)。
+    """
+    x, y, w, h = region_px
+    H, W = image_bgr.shape[:2]
+    x0 = max(0, min(x, W - 1)); y0 = max(0, min(y, H - 1))
+    x1 = max(x0 + 1, min(x + w, W)); y1 = max(y0 + 1, min(y + h, H))
+    crop = image_bgr[y0:y1, x0:x1]
+    ok, buf = cv2.imencode(".png", crop)
+    if not ok:
+        return []
+    # 範囲指定時はノイズ下限を緩め、範囲いっぱいの図形も拾えるよう上限を 1.0 に
+    detect_kwargs.setdefault("min_area_ratio", 0.01)
+    detect_kwargs.setdefault("max_area_ratio", 1.0)
+    shapes = detect_shapes_in_image(buf.tobytes(), **detect_kwargs)
+    # crop 内座標 -> 画像全体座標へオフセット
+    out: List[DetectedShape] = []
+    for s in shapes:
+        bx, by, bw, bh = s.bbox
+        out.append(DetectedShape(
+            kind=s.kind, bbox=(bx + x0, by + y0, bw, bh),
+            fill=s.fill, line=s.line, vertices=s.vertices,
+        ))
+    return out
+
+
+def add_detected_shape(
+    slide_shapes, det: DetectedShape,
+    pic_left: int, pic_top: int, pic_width: int, pic_height: int,
+    img_w: int, img_h: int,
+):
+    """検出図形を編集可能なオートシェイプとしてスライドに追加する（公開ラッパ）。"""
+    return _add_shape_for_detection(
+        slide_shapes, det, pic_left, pic_top, pic_width, pic_height, img_w, img_h,
+    )
 
 
 def representative_color(image_bgr: np.ndarray, bbox: Tuple[int, int, int, int]) -> Tuple[int, int, int]:

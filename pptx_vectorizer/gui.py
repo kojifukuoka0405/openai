@@ -26,7 +26,12 @@ import numpy as np
 from PIL import Image, ImageTk
 from pptx import Presentation
 
-from .core import add_editable_rectangle, representative_color
+from .core import (
+    add_editable_rectangle,
+    representative_color,
+    detect_shapes_in_region,
+    add_detected_shape,
+)
 
 # キャンバスに表示する画像の最大サイズ（ピクセル）
 MAX_VIEW_W = 960
@@ -92,10 +97,15 @@ class App(tk.Tk):
         self.clear_btn = ttk.Button(top, text="この画像の範囲を全消去", command=self._clear, state="disabled")
         self.clear_btn.pack(side="left", padx=6)
 
+        self.trace_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            top, text="範囲内の図形をトレース（推奨）", variable=self.trace_var
+        ).pack(side="left", padx=12)
+
         self.remove_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             top, text="変換後に元画像を削除", variable=self.remove_var
-        ).pack(side="left", padx=12)
+        ).pack(side="left")
 
         # キャンバス（スクロール対応）
         mid = ttk.Frame(self)
@@ -169,20 +179,32 @@ class App(tk.Tk):
             return
 
         created = 0
+        empty_regions = 0
+        trace = self.trace_var.get()
         try:
             for it in self.items:
                 if not it.regions:
                     continue
                 img_w, img_h = it.size
+                geom = (it.pic.left, it.pic.top, it.pic.width, it.pic.height)
                 for i, region in enumerate(it.regions, 1):
-                    color = representative_color(it.image_bgr, region)
-                    add_editable_rectangle(
-                        it.slide.shapes, region,
-                        it.pic.left, it.pic.top, it.pic.width, it.pic.height,
-                        img_w, img_h, color,
-                        name=f"Region-s{it.slide_index + 1}-{i}",
-                    )
-                    created += 1
+                    if trace:
+                        dets = detect_shapes_in_region(it.image_bgr, region)
+                        if not dets:
+                            empty_regions += 1
+                            continue
+                        for det in dets:
+                            add_detected_shape(
+                                it.slide.shapes, det, *geom, img_w, img_h,
+                            )
+                            created += 1
+                    else:
+                        color = representative_color(it.image_bgr, region)
+                        add_editable_rectangle(
+                            it.slide.shapes, region, *geom, img_w, img_h, color,
+                            name=f"Region-s{it.slide_index + 1}-{i}",
+                        )
+                        created += 1
                 if self.remove_var.get():
                     it.pic._element.getparent().remove(it.pic._element)
             self.prs.save(out)
@@ -190,7 +212,15 @@ class App(tk.Tk):
             messagebox.showerror("エラー", f"保存に失敗しました:\n{exc}")
             return
 
-        messagebox.showinfo("完了", f"{created} 個の編集可能な矩形を作成しました。\n\n保存先: {out}")
+        msg = f"{created} 個の編集可能なオブジェクトを作成しました。\n\n保存先: {out}"
+        if trace and empty_regions:
+            msg += (
+                f"\n\n※ {empty_regions} 個の範囲では図形を検出できませんでした。"
+                "\n  輪郭がはっきりした図形を含むように囲み直すか、"
+                "\n  「範囲内の図形をトレース」のチェックを外すと"
+                "\n  範囲全体を単色矩形に変換します。"
+            )
+        messagebox.showinfo("完了", msg)
 
     # ----- 表示 -----
     def _render(self) -> None:

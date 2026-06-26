@@ -10,6 +10,8 @@ from .core import (
     detect_shapes_in_image,
     add_editable_rectangle,
     representative_color,
+    detect_shapes_in_region,
+    add_detected_shape,
 )
 
 __all__ = [
@@ -18,5 +20,7 @@ __all__ = [
     "detect_shapes_in_image",
     "add_editable_rectangle",
     "representative_color",
+    "detect_shapes_in_region",
+    "add_detected_shape",
 ]
 __version__ = "0.1.0"

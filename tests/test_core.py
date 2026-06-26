@@ -16,6 +16,7 @@ from pptx_vectorizer.core import (
     detect_shapes_in_image,
     add_editable_rectangle,
     representative_color,
+    detect_shapes_in_region,
 )
 
 
@@ -105,6 +106,26 @@ def test_add_editable_rectangle_places_scaled_shape():
     assert shape.width == int(200 * pic.width / 400)
     assert shape.name == "Region-1"
     assert len(slide.shapes._spTree) == before + 1
+
+
+def test_detect_shapes_in_region_finds_colored_shape_not_white():
+    # 白背景に赤い矩形。背景が多めの範囲を選んでも、白でなく赤い図形を検出する
+    img = np.full((300, 400, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (40, 40), (160, 160), (0, 0, 255), -1)  # BGR 赤
+    dets = detect_shapes_in_region(img, (20, 20, 180, 180))
+    assert dets, "範囲内の図形が検出されるべき"
+    d = dets[0]
+    assert d.kind == "rectangle"
+    r, g, b = d.fill
+    assert r > 200 and g < 80 and b < 80  # 赤（白ではない）
+    # 座標は画像全体系に戻っている（オフセット適用済み）
+    bx, by, bw, bh = d.bbox
+    assert bx >= 20 and by >= 20
+
+
+def test_detect_shapes_in_region_empty_on_blank():
+    img = np.full((200, 200, 3), 255, dtype=np.uint8)
+    assert detect_shapes_in_region(img, (10, 10, 100, 100)) == []
 
 
 def test_convert_remove_original(tmp_path):
