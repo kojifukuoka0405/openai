@@ -16,6 +16,7 @@ REQUIRED = {
     "pptx": "python-pptx",
     "cv2": "opencv-python-headless",
     "numpy": "numpy",
+    "PIL": "Pillow",
 }
 
 

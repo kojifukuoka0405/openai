@@ -178,6 +178,67 @@ def _add_shape_for_detection(
     shape.name = f"Vectorized-{det.kind}"
 
 
+def representative_color(image_bgr: np.ndarray, bbox: Tuple[int, int, int, int]) -> Tuple[int, int, int]:
+    """画像の指定矩形領域の代表色（中央値）を RGB で返す。
+
+    平均ではなく中央値を使うことで、縁のアンチエイリアスやノイズの影響を抑え、
+    領域内で支配的な色を拾いやすくする。image_bgr は OpenCV の BGR 画像。
+    """
+    x, y, w, h = bbox
+    h_img, w_img = image_bgr.shape[:2]
+    x0 = max(0, min(x, w_img - 1))
+    y0 = max(0, min(y, h_img - 1))
+    x1 = max(x0 + 1, min(x + w, w_img))
+    y1 = max(y0 + 1, min(y + h, h_img))
+    patch = image_bgr[y0:y1, x0:x1].reshape(-1, 3)
+    if patch.size == 0:
+        return (255, 255, 255)
+    b, g, r = np.median(patch, axis=0)
+    return (int(r), int(g), int(b))
+
+
+def add_editable_rectangle(
+    slide_shapes,
+    region_px: Tuple[int, int, int, int],
+    pic_left: int,
+    pic_top: int,
+    pic_width: int,
+    pic_height: int,
+    img_w: int,
+    img_h: int,
+    fill_rgb: Tuple[int, int, int],
+    *,
+    line_rgb: Optional[Tuple[int, int, int]] = None,
+    name: str = "Region",
+):
+    """ユーザーが選択した画像内領域を、編集可能な矩形オートシェイプとして追加する。
+
+    region_px は画像ピクセル座標系の (x, y, w, h)。画像上の位置を、スライド上での
+    画像の表示位置・サイズ（EMU）に合わせてスケールして配置する。
+
+    Returns:
+        追加した shape オブジェクト。
+    """
+    x, y, w, h = region_px
+    sx = pic_width / img_w
+    sy = pic_height / img_h
+
+    left = Emu(int(pic_left + x * sx))
+    top = Emu(int(pic_top + y * sy))
+    width = Emu(max(1, int(w * sx)))
+    height = Emu(max(1, int(h * sy)))
+
+    shape = slide_shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top, width, height)
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = RGBColor(*fill_rgb)
+    if line_rgb is None:
+        shape.line.fill.background()  # 枠線なし
+    else:
+        shape.line.color.rgb = RGBColor(*line_rgb)
+    shape.name = name
+    return shape
+
+
 def convert_presentation(
     input_path: str,
     output_path: str,

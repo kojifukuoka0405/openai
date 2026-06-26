@@ -13,6 +13,8 @@ a = Analysis(
         "pptx",
         "cv2",
         "numpy",
+        "PIL",
+        "PIL._tkinter_finder",
     ],
     hookspath=[],
     runtime_hooks=[],

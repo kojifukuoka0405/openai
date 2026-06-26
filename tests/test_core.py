@@ -8,9 +8,14 @@ import pytest
 from pptx import Presentation
 from pptx.util import Inches
 
+from pptx import Presentation as _P
+from pptx.util import Inches as _In
+
 from pptx_vectorizer.core import (
     convert_presentation,
     detect_shapes_in_image,
+    add_editable_rectangle,
+    representative_color,
 )
 
 
@@ -66,6 +71,40 @@ def test_convert_presentation_creates_shapes(tmp_path):
     out = Presentation(str(dst))
     names = [s.name for s in out.slides[0].shapes]
     assert any(n.startswith("Vectorized-") for n in names)
+
+
+def test_representative_color_picks_region_color():
+    img = np.full((100, 100, 3), 255, dtype=np.uint8)
+    img[10:40, 10:40] = (0, 0, 255)  # BGR 赤
+    r, g, b = representative_color(img, (10, 10, 30, 30))
+    assert (r, g, b) == (255, 0, 0)  # RGB 赤
+
+
+def test_representative_color_clamps_out_of_bounds():
+    img = np.full((50, 50, 3), 128, dtype=np.uint8)
+    # 画像外にはみ出す領域でも例外なく代表色を返す
+    assert representative_color(img, (40, 40, 100, 100)) == (128, 128, 128)
+
+
+def test_add_editable_rectangle_places_scaled_shape():
+    prs = _P()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    img = np.zeros((200, 400, 3), dtype=np.uint8)  # img_w=400, img_h=200
+    pic = slide.shapes.add_picture(
+        io.BytesIO(_make_image_with_shapes()), _In(1), _In(1), _In(4), _In(2),
+    )
+    before = len(slide.shapes._spTree)
+    shape = add_editable_rectangle(
+        slide.shapes, (100, 50, 200, 100),
+        pic.left, pic.top, pic.width, pic.height,
+        400, 200, (10, 20, 30), name="Region-1",
+    )
+    # 画像の (100,50) は画像幅の 1/4, 高さの 1/4 -> 表示位置も比例
+    assert shape.left == pic.left + int(100 * pic.width / 400)
+    assert shape.top == pic.top + int(50 * pic.height / 200)
+    assert shape.width == int(200 * pic.width / 400)
+    assert shape.name == "Region-1"
+    assert len(slide.shapes._spTree) == before + 1
 
 
 def test_convert_remove_original(tmp_path):

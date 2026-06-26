@@ -4,7 +4,19 @@
 PowerPoint のオートシェイプ（編集可能オブジェクト）として同じ位置に配置する。
 """
 
-from .core import convert_presentation, DetectedShape, detect_shapes_in_image
+from .core import (
+    convert_presentation,
+    DetectedShape,
+    detect_shapes_in_image,
+    add_editable_rectangle,
+    representative_color,
+)
 
-__all__ = ["convert_presentation", "DetectedShape", "detect_shapes_in_image"]
+__all__ = [
+    "convert_presentation",
+    "DetectedShape",
+    "detect_shapes_in_image",
+    "add_editable_rectangle",
+    "representative_color",
+]
 __version__ = "0.1.0"
