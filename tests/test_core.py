@@ -128,6 +128,44 @@ def test_detect_shapes_in_region_empty_on_blank():
     assert detect_shapes_in_region(img, (10, 10, 100, 100)) == []
 
 
+def test_detect_primitives_traces_lines_and_circles_not_gray_box():
+    from pptx_vectorizer.core import detect_primitives_in_region
+    img = np.full((400, 700, 3), 255, dtype=np.uint8)
+    cv2.circle(img, (120, 200), 50, (150, 150, 150), 3)
+    cv2.circle(img, (580, 200), 50, (150, 150, 150), 3)
+    cv2.line(img, (120, 120), (580, 280), (120, 120, 120), 2)
+    cv2.line(img, (120, 280), (580, 120), (120, 120, 120), 2)
+    prims = detect_primitives_in_region(img, (0, 0, 700, 400))
+    kinds = [p.kind for p in prims]
+    assert kinds.count("circle") == 2
+    assert kinds.count("line") >= 2
+    # 範囲全体を覆う巨大な塗り矩形を作っていないこと
+    assert all(p.kind != "rect" for p in prims)
+    # 色は背景の白ではなくインク色（可視）
+    for p in prims:
+        assert not all(c >= 238 for c in p.color)
+
+
+def test_add_primitive_creates_line_and_oval():
+    from pptx_vectorizer.core import detect_primitives_in_region, add_primitive, Primitive
+    prs = _P()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    img = np.zeros((200, 400, 3), dtype=np.uint8)
+    pic = slide.shapes.add_picture(
+        io.BytesIO(_make_image_with_shapes()), _In(1), _In(1), _In(4), _In(2),
+    )
+    line = add_primitive(
+        slide.shapes, Primitive("line", (10, 20, 30), (0, 0, 100, 100)),
+        pic.left, pic.top, pic.width, pic.height, 400, 200,
+    )
+    oval = add_primitive(
+        slide.shapes, Primitive("circle", (200, 10, 10), (50, 50, 40, 40)),
+        pic.left, pic.top, pic.width, pic.height, 400, 200,
+    )
+    assert line.name == "Traced-line"
+    assert oval.name == "Traced-circle"
+
+
 def test_convert_remove_original(tmp_path):
     src = tmp_path / "in.pptx"
     dst = tmp_path / "out.pptx"

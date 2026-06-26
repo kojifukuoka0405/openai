@@ -12,6 +12,9 @@ from .core import (
     representative_color,
     detect_shapes_in_region,
     add_detected_shape,
+    detect_primitives_in_region,
+    add_primitive,
+    Primitive,
 )
 
 __all__ = [
@@ -22,5 +25,8 @@ __all__ = [
     "representative_color",
     "detect_shapes_in_region",
     "add_detected_shape",
+    "detect_primitives_in_region",
+    "add_primitive",
+    "Primitive",
 ]
 __version__ = "0.1.0"

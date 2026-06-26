@@ -10,9 +10,9 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.dml.color import RGBColor
-from pptx.util import Emu
+from pptx.util import Emu, Pt
 
 
 # OpenCV の近似頂点数 -> PowerPoint オートシェイプ種別の対応
@@ -221,6 +221,214 @@ def add_detected_shape(
     return _add_shape_for_detection(
         slide_shapes, det, pic_left, pic_top, pic_width, pic_height, img_w, img_h,
     )
+
+
+# ---------------------------------------------------------------------------
+# プリミティブ（線・円・塗り矩形）検出 — 線画ダイアグラム向けの高品質トレース
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Primitive:
+    """検出した 1 つの編集可能プリミティブ（画像ピクセル座標系）。"""
+
+    kind: str                       # "line" | "circle" | "rect"
+    color: Tuple[int, int, int]     # RGB（線色 or 塗り色）
+    # line の場合は (x1, y1, x2, y2)、circle/rect の場合は (x, y, w, h)
+    coords: Tuple[int, int, int, int]
+    filled: bool = False            # rect が塗りつぶしかどうか
+
+
+def _line_color(image_bgr: np.ndarray, x1, y1, x2, y2) -> Tuple[int, int, int]:
+    """線分上をサンプリングして代表色（中央値）を RGB で返す。"""
+    n = 20
+    xs = np.linspace(x1, x2, n).astype(int)
+    ys = np.linspace(y1, y2, n).astype(int)
+    H, W = image_bgr.shape[:2]
+    xs = np.clip(xs, 0, W - 1); ys = np.clip(ys, 0, H - 1)
+    pix = image_bgr[ys, xs]
+    b, g, r = np.median(pix, axis=0)
+    return (int(r), int(g), int(b))
+
+
+def _circle_color(image_bgr: np.ndarray, cx, cy, rad) -> Tuple[int, int, int]:
+    """円周付近を複数半径でサンプリングし、最も濃い（=線らしい）色を RGB で返す。"""
+    H, W = image_bgr.shape[:2]
+    ang = np.linspace(0, 2 * math.pi, 72)
+    best = (255, 255, 255)
+    best_lum = 1e9
+    for fr in (0.88, 0.94, 1.0, 1.06):
+        r_ = rad * fr
+        xs = np.clip((cx + r_ * np.cos(ang)).astype(int), 0, W - 1)
+        ys = np.clip((cy + r_ * np.sin(ang)).astype(int), 0, H - 1)
+        pix = image_bgr[ys, xs]
+        b, g, r = np.median(pix, axis=0)
+        lum = 0.114 * b + 0.587 * g + 0.299 * r
+        if lum < best_lum:
+            best_lum = lum
+            best = (int(r), int(g), int(b))
+    return best
+
+
+def _is_near_white(color: Tuple[int, int, int], thresh: int = 238) -> bool:
+    """白に近い（背景と同化して見えない）色か。"""
+    return all(c >= thresh for c in color)
+
+
+def _merge_collinear(lines, angle_tol=8.0, dist_tol=12.0):
+    """近接・同方向の線分をまとめて本数を減らす（端点ベースの素朴なマージ）。"""
+    segs = []
+    for x1, y1, x2, y2 in lines:
+        ang = math.degrees(math.atan2(y2 - y1, x2 - x1)) % 180
+        length = math.hypot(x2 - x1, y2 - y1)
+        segs.append([x1, y1, x2, y2, ang, length])
+    segs.sort(key=lambda s: -s[5])  # 長い順
+    kept = []
+    for s in segs:
+        x1, y1, x2, y2, ang, ln = s
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        dup = False
+        for k in kept:
+            kang = k[4]
+            da = abs(ang - kang)
+            da = min(da, 180 - da)
+            if da > angle_tol:
+                continue
+            kmx, kmy = (k[0] + k[2]) / 2, (k[1] + k[3]) / 2
+            if math.hypot(mx - kmx, my - kmy) < dist_tol:
+                dup = True
+                break
+        if not dup:
+            kept.append(s)
+    return [(int(s[0]), int(s[1]), int(s[2]), int(s[3])) for s in kept]
+
+
+def detect_primitives_in_region(
+    image_bgr: np.ndarray,
+    region_px: Tuple[int, int, int, int],
+    *,
+    min_line_frac: float = 0.18,
+    max_lines: int = 40,
+) -> List[Primitive]:
+    """指定範囲内の線・円・塗り矩形を個別に検出する（線画ダイアグラム向け）。
+
+    線は塗りなしの直線、円は塗りなしの楕円、はっきり塗られた矩形のみ塗り矩形として
+    返す。座標は画像全体系。範囲全体を 1 つの灰色矩形に潰さないのが従来との違い。
+    """
+    x, y, w, h = region_px
+    H, W = image_bgr.shape[:2]
+    x0 = max(0, min(x, W - 1)); y0 = max(0, min(y, H - 1))
+    x1 = max(x0 + 1, min(x + w, W)); y1 = max(y0 + 1, min(y + h, H))
+    crop = image_bgr[y0:y1, x0:x1]
+    ch, cw = crop.shape[:2]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    prims: List[Primitive] = []
+
+    # --- 円（Hough）---
+    min_dim = min(cw, ch)
+    circles = cv2.HoughCircles(
+        blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=min_dim * 0.2,
+        param1=120, param2=40,
+        minRadius=int(min_dim * 0.04), maxRadius=int(min_dim * 0.55),
+    )
+    circle_mask_centers = []
+    if circles is not None:
+        for cx, cy, rad in np.round(circles[0]).astype(int):
+            color = _circle_color(crop, cx, cy, rad)
+            if _is_near_white(color):
+                continue  # 白い円＝背景に同化して見えない → 捨てる
+            prims.append(Primitive(
+                "circle", color,
+                (x0 + cx - rad, y0 + cy - rad, 2 * rad, 2 * rad),
+            ))
+            circle_mask_centers.append((cx, cy, rad))
+
+    # --- 塗り矩形（内部が均一色のものだけ）---
+    edges = cv2.Canny(blur, 50, 150)
+    edges_d = cv2.dilate(edges, np.ones((3, 3), np.uint8), 1)
+    contours, _ = cv2.findContours(edges_d, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    crop_area = cw * ch
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < crop_area * 0.02 or area > crop_area * 0.98:
+            continue
+        peri = cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+        if len(approx) != 4 or not cv2.isContourConvex(approx):
+            continue
+        rx, ry, rw, rh = cv2.boundingRect(approx)
+        # 内部 60% 領域の色ばらつきが小さい＝塗りつぶし矩形とみなす
+        inner = crop[ry + rh // 5: ry + rh - rh // 5, rx + rw // 5: rx + rw - rw // 5]
+        if inner.size == 0:
+            continue
+        if inner.reshape(-1, 3).std(axis=0).mean() > 18:
+            continue  # 内部が一様でない（=ただの枠や複雑領域）→ 矩形化しない
+        b, g, r = np.median(inner.reshape(-1, 3), axis=0)
+        prims.append(Primitive(
+            "rect", (int(r), int(g), int(b)),
+            (x0 + rx, y0 + ry, rw, rh), filled=True,
+        ))
+
+    # --- 直線（Hough）---
+    min_len = max(20, int(min(cw, ch) * min_line_frac))
+    hough = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, threshold=60,
+        minLineLength=min_len, maxLineGap=10,
+    )
+    if hough is not None:
+        raw = [tuple(l[0]) for l in hough]
+        for (lx1, ly1, lx2, ly2) in _merge_collinear(raw)[:max_lines]:
+            color = _line_color(crop, lx1, ly1, lx2, ly2)
+            if _is_near_white(color):
+                continue  # 白い線＝背景に同化 → 捨てる
+            prims.append(Primitive(
+                "line", color,
+                (x0 + lx1, y0 + ly1, x0 + lx2, y0 + ly2),
+            ))
+
+    return prims
+
+
+def add_primitive(
+    slide_shapes, prim: Primitive,
+    pic_left: int, pic_top: int, pic_width: int, pic_height: int,
+    img_w: int, img_h: int,
+):
+    """検出プリミティブを編集可能オブジェクトとしてスライドに追加する。"""
+    sx = pic_width / img_w
+    sy = pic_height / img_h
+
+    def ex(v):  # 画像px(横) -> スライドEMU
+        return Emu(int(pic_left + v * sx))
+
+    def ey(v):
+        return Emu(int(pic_top + v * sy))
+
+    if prim.kind == "line":
+        lx1, ly1, lx2, ly2 = prim.coords
+        conn = slide_shapes.add_connector(MSO_CONNECTOR.STRAIGHT, ex(lx1), ey(ly1), ex(lx2), ey(ly2))
+        conn.line.color.rgb = RGBColor(*prim.color)
+        conn.line.width = Pt(1.5)
+        conn.name = "Traced-line"
+        return conn
+
+    x, y, w, h = prim.coords
+    left, top = ex(x), ey(y)
+    width = Emu(max(1, int(w * sx)))
+    height = Emu(max(1, int(h * sy)))
+    enum = MSO_SHAPE.OVAL if prim.kind == "circle" else MSO_SHAPE.RECTANGLE
+    shape = slide_shapes.add_shape(enum, left, top, width, height)
+    if prim.kind == "circle" or not prim.filled:
+        shape.fill.background()                       # 塗りなし＝中身を隠さない
+        shape.line.color.rgb = RGBColor(*prim.color)
+        shape.line.width = Pt(1.5)
+    else:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = RGBColor(*prim.color)
+        shape.line.fill.background()
+    shape.name = f"Traced-{prim.kind}"
+    return shape
 
 
 def representative_color(image_bgr: np.ndarray, bbox: Tuple[int, int, int, int]) -> Tuple[int, int, int]:

@@ -29,8 +29,8 @@ from pptx import Presentation
 from .core import (
     add_editable_rectangle,
     representative_color,
-    detect_shapes_in_region,
-    add_detected_shape,
+    detect_primitives_in_region,
+    add_primitive,
 )
 
 # キャンバスに表示する画像の最大サイズ（ピクセル）
@@ -99,7 +99,7 @@ class App(tk.Tk):
 
         self.trace_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            top, text="範囲内の図形をトレース（推奨）", variable=self.trace_var
+            top, text="範囲内の図形・線をトレース（推奨）", variable=self.trace_var
         ).pack(side="left", padx=12)
 
         self.remove_var = tk.BooleanVar(value=False)
@@ -189,13 +189,13 @@ class App(tk.Tk):
                 geom = (it.pic.left, it.pic.top, it.pic.width, it.pic.height)
                 for i, region in enumerate(it.regions, 1):
                     if trace:
-                        dets = detect_shapes_in_region(it.image_bgr, region)
-                        if not dets:
+                        prims = detect_primitives_in_region(it.image_bgr, region)
+                        if not prims:
                             empty_regions += 1
                             continue
-                        for det in dets:
-                            add_detected_shape(
-                                it.slide.shapes, det, *geom, img_w, img_h,
+                        for prim in prims:
+                            add_primitive(
+                                it.slide.shapes, prim, *geom, img_w, img_h,
                             )
                             created += 1
                     else:
@@ -215,10 +215,9 @@ class App(tk.Tk):
         msg = f"{created} 個の編集可能なオブジェクトを作成しました。\n\n保存先: {out}"
         if trace and empty_regions:
             msg += (
-                f"\n\n※ {empty_regions} 個の範囲では図形を検出できませんでした。"
-                "\n  輪郭がはっきりした図形を含むように囲み直すか、"
-                "\n  「範囲内の図形をトレース」のチェックを外すと"
-                "\n  範囲全体を単色矩形に変換します。"
+                f"\n\n※ {empty_regions} 個の範囲では図形・線を検出できませんでした。"
+                "\n  対象が文字や複雑な絵の場合はトレースできません。"
+                "\n  単純な図形・線を含むように囲み直してください。"
             )
         messagebox.showinfo("完了", msg)
 
