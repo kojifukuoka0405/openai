@@ -40,7 +40,21 @@ python -m pptx_vectorizer 入力.pptx 出力.pptx
 python -m pptx_vectorizer deck.pptx deck_vectorized.pptx --remove-original
 ```
 
-### GUI
+### GUI（ローカルアプリ）
+
+最も簡単な起動方法 — **依存ライブラリの自動インストール付きランチャー**を使います:
+
+| OS | 起動方法 |
+|---|---|
+| Windows | `run_gui.bat` をダブルクリック |
+| macOS | `run_gui.command` をダブルクリック（初回は右クリック→開く） |
+| 共通 | ターミナルで `python run_gui.py` |
+
+ランチャーが不足している依存を検出して自動で `pip install` し、GUI を起動します。
+`tkinter` が無い場合は OS ごとの追加手順を案内します
+（Ubuntu/Debian なら `sudo apt-get install python3-tk`）。
+
+依存を手動で入れて直接起動することもできます:
 
 ```bash
 python -m pptx_vectorizer.gui
