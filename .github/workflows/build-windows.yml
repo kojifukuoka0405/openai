@@ -11,6 +11,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write   # Release の作成・更新に必要
+
 jobs:
   build:
     runs-on: windows-latest
@@ -35,8 +38,24 @@ jobs:
           name: pptx-vectorizer-windows
           path: dist/pptx-vectorizer.exe
 
-      - name: Attach to release
+      # タグ push 時は通常リリースへ添付
+      - name: Attach to tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          files: dist/pptx-vectorizer.exe
+
+      # ブランチ push / 手動実行時は固定タグ「windows-latest」のリリースを更新。
+      # Release のアセットなら、ログイン不要・スマホでもクリックして DL できる。
+      - name: Publish latest Windows build
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-latest
+          name: Windows 最新ビルド (.exe)
+          body: |
+            PPTX 画像→図形 変換ツールの Windows 用実行ファイルです。
+            下の Assets にある `pptx-vectorizer.exe` をクリックしてダウンロードし、
+            ダブルクリックで起動してください（Python のインストール不要）。
+          prerelease: true
           files: dist/pptx-vectorizer.exe
