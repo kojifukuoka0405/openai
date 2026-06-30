@@ -1,0 +1,73 @@
+{
+  "_comment": "プレイ可能国の初期パラメータ（基準値・実装で調整）。0-100スケール、budgetは相対指数。各国はいつでもAI委任可（DoctrineProvider）。出発点は2020年代の各国宇宙開発の実情。",
+  "_scale": "0-100。public_will は {base, volatility} 。risk_posture: cautious|balanced|aggressive。",
+  "nations": [
+    {
+      "id": "usa",
+      "name_ja": "アメリカ",
+      "name_en": "United States",
+      "tagline": "最高到達点と、政治の振り子",
+      "params": {
+        "budget": 95,
+        "capability": 90,
+        "commercial": 95,
+        "crewed_autonomy": 85,
+        "plan_stability": 45,
+        "cohesion_affinity": 70,
+        "public_will": { "base": 65, "volatility": "high" },
+        "risk_posture": "balanced_aggressive"
+      },
+      "signature": "商業×資金の物量",
+      "strengths": ["潤沢な資金", "成熟した深宇宙技術", "民間打ち上げによる低$/kgと俊敏性", "国際枠組みの主導力"],
+      "weaknesses": ["政権交代・議会で計画が揺れる", "公的計画の高コスト・官僚的"],
+      "god_layer_affinity": { "economy_boom": "strong_benefit", "domestic_politics": "very_sensitive" },
+      "default_doctrine": "expansionist"
+    },
+    {
+      "id": "china",
+      "name_ja": "中国",
+      "name_en": "China",
+      "tagline": "揺るがぬ長期計画と、孤立のリスク",
+      "params": {
+        "budget": 70,
+        "capability": 75,
+        "commercial": 45,
+        "crewed_autonomy": 80,
+        "plan_stability": 90,
+        "cohesion_affinity": 35,
+        "public_will": { "base": 60, "volatility": "low" },
+        "risk_posture": "balanced"
+      },
+      "signature": "計画の不動",
+      "strengths": ["中央集権による安定した長期計画", "自前の有人打ち上げ能力", "堅実な資金", "段階的な着実遂行"],
+      "weaknesses": ["国際協調が得にくい", "技術を独力で賄う負担", "商業セクターは発展途上"],
+      "god_layer_affinity": { "economy_bust": "resilient", "geopolitics_bloc": "vulnerable" },
+      "default_doctrine": "cautious"
+    },
+    {
+      "id": "japan",
+      "name_ja": "日本",
+      "name_en": "Japan",
+      "tagline": "技術の妙と、同盟という生命線",
+      "params": {
+        "budget": 35,
+        "capability": 80,
+        "commercial": 40,
+        "crewed_autonomy": 30,
+        "plan_stability": 65,
+        "cohesion_affinity": 85,
+        "public_will": { "base": 60, "volatility": "medium" },
+        "risk_posture": "cautious"
+      },
+      "signature": "技術精度×同盟",
+      "strengths": ["高い技術成熟度と信頼性", "ISRU/ロボティクス/科学の強み", "国際協調の初期値が高く共同事業で力を倍化"],
+      "weaknesses": ["予算規模が小さい", "有人スケールは提携に依存", "保守的なリスク姿勢", "財政・人口制約"],
+      "god_layer_affinity": { "cohesion_regime": "strong_benefit", "budget_cut_or_isolation": "vulnerable" },
+      "default_doctrine": "cooperative"
+    }
+  ],
+  "ai_delegation": {
+    "note": "いずれの国もいつでも DoctrineProvider にAI委任できる（observer_mode.md）。完全委任・部分委任・要所のみ手動が連続的に選べる。",
+    "available_doctrines": ["cautious", "expansionist", "cooperative", "commercial", "balanced", "custom"]
+  }
+}
