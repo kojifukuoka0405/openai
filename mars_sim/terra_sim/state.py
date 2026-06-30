@@ -26,6 +26,25 @@ MILESTONES = [
 
 
 @dataclass
+class Mission:
+    """進行中のミッション（M1）。段階遷移を state machine で進める。
+
+    stage: build → await_window → ascent → transit → edl → done / failed
+    """
+
+    template: str
+    dest: str
+    kind: str
+    grants: str          # 成功時に付与するマイルストン key
+    stage: str = "build"
+    remaining: int = 0   # 現ステージの残りターン
+    needs_window: bool = False
+
+    def snapshot(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Nation:
     """国家（自国＝プレイヤーの分身、他国＝自律勢力）。
 
@@ -49,6 +68,7 @@ class Nation:
     trust_to_player: float = 50.0  # 自国への信頼（他国のみ意味を持つ）
 
     reached: set[str] = field(default_factory=set)  # 達成済みマイルストン
+    mission: "Mission | None" = None                 # 進行中ミッション（M1）
 
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)

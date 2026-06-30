@@ -35,8 +35,17 @@ def print_dashboard(state: GameState) -> None:
     for n in state.nations.values():
         tag = "▶自国" if n.is_player else "  他国"
         ms = "".join("●" if key in n.reached else "○" for _, key, _ in MILESTONES)
+        mission = ""
+        if n.mission is not None:
+            stage_ja = {"build": "建造", "await_window": "窓待ち",
+                        "transit": "遷移中", "edl": "着陸接近"}.get(n.mission.stage, n.mission.stage)
+            mission = f"  ⟳{_dest_ja(n.mission)}{stage_ja}"
         print(f"   {tag} {n.name_ja:4s} 予算{n.budget:5.1f} 技術{n.capability:5.1f} "
-              f"進出{n.spacefaring:5.1f} リスク{n.risk_debt:4.1f}  到達[{ms}]")
+              f"進出{n.spacefaring:5.1f} リスク{n.risk_debt:4.1f}  到達[{ms}]{mission}")
+
+
+def _dest_ja(mission) -> str:
+    return "火星" if mission.dest == "mars" else "月"
 
 
 def print_chronicle(state: GameState, last: int | None = None) -> None:
@@ -78,6 +87,19 @@ class CliHumanProvider(DecisionProvider):
     # 神が起こしたイベントの決着は最初の選択肢（最小実装）
     def choose_choice_index(self, event) -> int:
         return 0
+
+    # ---- M1: ミッション着手をプレイヤーが判断 ----
+    def launch_buffer(self) -> float:
+        return 0.0  # 条件を満たし次第プレイヤーに諮る
+
+    def confirm_launch(self, state, nation, template_id, template) -> bool:
+        dest_ja = {"moon": "月", "mars": "火星"}.get(template["dest"], template["dest"])
+        kind_ja = {"crewed": "有人", "cargo": "無人補給"}.get(template["kind"], template["kind"])
+        edl = template["failure"]["edl"]
+        win = "（火星窓を待って出発）" if template["needs_window"] else ""
+        print(f"\n[{state.year}年] {nation.name_ja}：{dest_ja}{kind_ja}ミッションに着手可能"
+              f"（着陸失敗基礎率{edl:.0%}・技術{nation.capability:.0f}）{win}")
+        return _ask_int("  着手する？ 1)はい 0)見送る（既定1）: ", default=1, lo=0, hi=1) == 1
 
 
 def _ask_int(prompt: str, *, default: int, lo: int, hi: int) -> int:

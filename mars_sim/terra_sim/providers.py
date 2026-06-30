@@ -44,13 +44,14 @@ class GodDecision:
 
 
 # ---- ドクトリン（国家AIの方針プリセット）-----------------------------------
-# space_ratio と内訳重み、協調傾向。observer_mode.md ダイヤル①に対応。
+# space_ratio と内訳重み、協調傾向、launch_buffer（ミッション着手の慎重さ）。
+# observer_mode.md ダイヤル①に対応。buffer が小さいほど早く（リスクを取って）打つ。
 DOCTRINES: dict[str, dict[str, Any]] = {
-    "cautious":     {"space_ratio": 0.50, "w": (0.40, 0.30, 0.30), "diplo": 0.15},
-    "expansionist": {"space_ratio": 0.80, "w": (0.30, 0.55, 0.15), "diplo": 0.05},
-    "cooperative":  {"space_ratio": 0.60, "w": (0.40, 0.35, 0.25), "diplo": 0.55},
-    "commercial":   {"space_ratio": 0.70, "w": (0.30, 0.50, 0.20), "diplo": 0.20},
-    "balanced":     {"space_ratio": 0.65, "w": (0.34, 0.33, 0.33), "diplo": 0.25},
+    "cautious":     {"space_ratio": 0.50, "w": (0.40, 0.30, 0.30), "diplo": 0.15, "buffer": 14},
+    "expansionist": {"space_ratio": 0.80, "w": (0.30, 0.55, 0.15), "diplo": 0.05, "buffer": 0},
+    "cooperative":  {"space_ratio": 0.60, "w": (0.40, 0.35, 0.25), "diplo": 0.55, "buffer": 8},
+    "commercial":   {"space_ratio": 0.70, "w": (0.30, 0.50, 0.20), "diplo": 0.20, "buffer": 4},
+    "balanced":     {"space_ratio": 0.65, "w": (0.34, 0.33, 0.33), "diplo": 0.25, "buffer": 8},
 }
 
 
@@ -62,6 +63,16 @@ class DecisionProvider:
 
     def god_decision(self, state: GameState, book: EventBook) -> GodDecision | None:
         return None
+
+    # ---- M1: ミッション着手の意思決定 ----
+    def launch_buffer(self) -> float:
+        """必要技術量に上乗せする慎重マージン（大きいほど着手が遅い）。"""
+        return 8.0
+
+    def confirm_launch(self, state: GameState, nation: Nation, template_id: str,
+                       template: dict[str, Any]) -> bool:
+        """着手条件を満たしたとき、実際に打つかの最終確認（自律は True）。"""
+        return True
 
 
 class DoctrineProvider(DecisionProvider):
@@ -88,6 +99,9 @@ class DoctrineProvider(DecisionProvider):
             w_mis -= 0.15
         diplo = self.rng.chance(d["diplo"])
         return NationalDecision(ratio, w_rd, w_mis, w_saf, diplo).normalized()
+
+    def launch_buffer(self) -> float:
+        return float(DOCTRINES[self.doctrine]["buffer"])
 
 
 class FateProvider(DecisionProvider):

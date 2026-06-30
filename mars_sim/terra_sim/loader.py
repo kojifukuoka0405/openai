@@ -41,6 +41,11 @@ def load_events() -> list[dict[str, Any]]:
     return events
 
 
+def load_missions() -> dict[str, Any]:
+    """ミッション・テンプレートと火星窓の定義を返す。"""
+    return _read_json(DATA_DIR / "missions" / "missions.json")
+
+
 def build_nation(defn: dict[str, Any], *, is_player: bool) -> Nation:
     """JSON 定義から動的ステータス付きの Nation を生成する。"""
     p = defn["params"]

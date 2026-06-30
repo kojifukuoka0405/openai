@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from .events import EventBook, resolve_choice
+from .loader import load_missions
 from .providers import (
     DecisionProvider,
     DoctrineProvider,
@@ -19,7 +20,20 @@ from .providers import (
     NationalDecision,
 )
 from .rng import Rng
-from .state import MILESTONES, GameState, Nation, clamp
+from .state import MILESTONES, GameState, Mission, Nation, clamp
+
+# マイルストン key → ミッション・テンプレート（leo_economy は能力で自動到達）
+TEMPLATE_FOR = {
+    "lunar_base": "moon_crewed",
+    "lunar_isru": "moon_isru",
+    "mars_landing": "mars_crewed",
+    "mars_settlement": "mars_settle",
+}
+AUTO_MILESTONES = {"leo_economy"}
+
+
+def _dest(m: Mission) -> str:
+    return "火星" if m.dest == "mars" else "月"
 
 # --- チューニング定数（基準値・実装で調整）---------------------------------
 INVEST_SCALE = 0.11        # 投資→各能力への変換係数
@@ -47,6 +61,10 @@ class Engine:
         self.state = state
         self.book = event_book
         self.rng = Rng(seed)
+        # M1: ミッション・テンプレートと火星窓の定義
+        mdata = load_missions()
+        self.templates: dict = mdata["templates"]
+        self.window_cfg: dict = mdata["mars_window"]
         # 既定：他国は default_doctrine で自律、自国も（observer 用に）自律を仮置き
         self.national_providers = national_providers or {}
         for nid, n in state.nations.items():
@@ -71,9 +89,10 @@ class Engine:
         for n in s.nations.values():
             self._accident_check(n)
 
-        # ③ マイルストン到達（人類の偉業は Mandate と世界世論を押し上げる）
+        # ③ マイルストン：LEO は能力で自動、それ以降はミッション・パイプライン（M1）
         for n in s.nations.values():
-            self._milestone_check(n)
+            self._auto_milestone_check(n)
+            self._mission_phase(n)
 
         # ④ 神レイヤー：能動起動（Mandate 消費）or 自然進行
         self._god_phase()
@@ -130,12 +149,136 @@ class Engine:
                 return
         s.log(f"{n.name_ja}でミッション事故。計画が後退した。", "accident")
 
-    def _milestone_check(self, n: Nation) -> None:
-        s = self.state
+    def _auto_milestone_check(self, n: Nation) -> None:
+        """能力で自動到達するマイルストン（LEO経済）。"""
         for threshold, key, label in MILESTONES:
-            if n.spacefaring >= threshold and key not in n.reached:
+            if key in AUTO_MILESTONES and n.spacefaring >= threshold and key not in n.reached:
                 n.reached.add(key)
                 self._on_milestone(n, key, label)
+
+    # ---- M1: ミッション・パイプライン -----------------------------------
+    def mars_window(self, year: int) -> bool:
+        """その年が火星打ち上げ窓か（会合周期 約2.135年）。"""
+        period = self.window_cfg["synodic_years"]
+        base = self.window_cfg["reference_year"]
+        tol = self.window_cfg["tolerance_years"]
+        k = round((year - base) / period)
+        return abs((base + k * period) - year) < tol
+
+    def _next_target(self, n: Nation) -> tuple[str, str, str] | None:
+        """次に挑むべきマイルストン（key, label, template_id）。順序どおり最初の未達。"""
+        for _threshold, key, label in MILESTONES:
+            if key in n.reached:
+                continue
+            if key in AUTO_MILESTONES:
+                return None  # LEO 未達のうちはミッション着手しない
+            return key, label, TEMPLATE_FOR[key]
+        return None
+
+    def _mission_phase(self, n: Nation) -> None:
+        if self.state.space_winter:
+            return
+        if n.mission is None:
+            self._maybe_launch(n)
+        else:
+            self._advance_mission(n)
+
+    def _maybe_launch(self, n: Nation) -> None:
+        target = self._next_target(n)
+        if target is None:
+            return
+        key, _label, template_id = target
+        tmpl = self.templates[template_id]
+        provider = self.national_providers[n.id]
+        buffer = provider.launch_buffer()
+        if n.spacefaring < tmpl["requires_capacity"] + buffer:
+            return
+        if not provider.confirm_launch(self.state, n, template_id, tmpl):
+            return
+        n.mission = Mission(
+            template=template_id, dest=tmpl["dest"], kind=tmpl["kind"],
+            grants=tmpl["grants"], stage="build",
+            remaining=int(tmpl["build_turns"]), needs_window=bool(tmpl["needs_window"]),
+        )
+        dest_ja = {"moon": "月", "mars": "火星"}.get(tmpl["dest"], tmpl["dest"])
+        kind_ja = {"crewed": "有人", "cargo": "無人補給"}.get(tmpl["kind"], tmpl["kind"])
+        self.state.log(f"{n.name_ja}が{dest_ja}{kind_ja}ミッションの建造を開始。", "mission")
+
+    def _fail_prob(self, n: Nation, base: float) -> float:
+        """段階失敗確率：技術成熟度が下げ、リスク負債が上げる。"""
+        p = base * (1 + n.risk_debt * 0.015) * (1 - (n.capability - 80) * 0.005)
+        return max(0.01, min(0.9, p))
+
+    def _advance_mission(self, n: Nation) -> None:
+        m = n.mission
+        assert m is not None
+        tmpl = self.templates[m.template]
+        s = self.state
+
+        if m.stage == "build":
+            m.remaining -= 1
+            if m.remaining <= 0:
+                # 建造完了 → 打ち上げ（上昇段の失敗判定）
+                if self.rng.chance(self._fail_prob(n, tmpl["failure"]["ascent"])):
+                    self._mission_failed(n, "ascent")
+                    return
+                m.stage = "await_window" if m.needs_window else "transit"
+                m.remaining = int(tmpl["transit_turns"])
+                if m.stage == "transit":
+                    s.log(f"{n.name_ja}：打ち上げ成功、{_dest(m)}へ遷移中。", "mission")
+            return
+
+        if m.stage == "await_window":
+            if self.mars_window(s.year):
+                m.stage = "transit"
+                m.remaining = int(tmpl["transit_turns"])
+                s.log(f"{n.name_ja}：火星打ち上げ窓が開く——{_dest(m)}へ向け出発。", "mission")
+            return
+
+        if m.stage == "transit":
+            if m.remaining > 0:
+                m.remaining -= 1
+                return
+            # 遷移完了 → 有人は航行リスク（生命維持・放射線）
+            if m.kind == "crewed" and self.rng.chance(self._fail_prob(n, tmpl["failure"]["transit"])):
+                self._mission_failed(n, "transit")
+                return
+            m.stage = "edl"
+            return
+
+        if m.stage == "edl":
+            # EDL（突入・降下・着陸）— 火星最大の難所
+            if self.rng.chance(self._fail_prob(n, tmpl["failure"]["edl"])):
+                self._mission_failed(n, "edl")
+                return
+            self._mission_succeeded(n)
+
+    def _mission_succeeded(self, n: Nation) -> None:
+        m = n.mission
+        assert m is not None
+        for _t, key, label in MILESTONES:
+            if key == m.grants:
+                n.reached.add(key)
+                self._on_milestone(n, key, label)
+                break
+        n.mission = None
+
+    def _mission_failed(self, n: Nation, stage: str) -> None:
+        m = n.mission
+        assert m is not None
+        s = self.state
+        n.risk_debt = clamp(n.risk_debt + 6)
+        n.spacefaring = clamp(n.spacefaring - self.rng.uniform(1, 4), 0, 120)
+        stage_ja = {"ascent": "打ち上げ", "transit": "航行中", "edl": "着陸(EDL)"}.get(stage, stage)
+        if m.kind == "crewed":
+            n.public_will = clamp(n.public_will - 12)
+            s.kpi.public_will = clamp(s.kpi.public_will - 6)
+            dest_ja = "火星" if m.dest == "mars" else "月"
+            s.log(f"{n.name_ja}の{dest_ja}有人ミッションが{stage_ja}で失敗——乗員が失われた。世界が沈黙する。", "accident")
+        else:
+            n.public_will = clamp(n.public_will - 3)
+            s.log(f"{n.name_ja}の無人ミッションが{stage_ja}で失敗。再挑戦へ。", "accident")
+        n.mission = None
 
     def _on_milestone(self, n: Nation, key: str, label: str) -> None:
         s = self.state
