@@ -49,6 +49,10 @@ python run.py --mode observer --nation usa --doctrine expansionist --fate harsh
 # キャンペーン（自国を直接指示＋神として介入）
 python run.py --mode campaign --nation japan --turns 12
 
+# 可視化（太陽系俯瞰＋ダッシュボード＋年代記の自己完結HTMLを生成）
+python run.py --mode viz --nation usa --doctrine expansionist --fate harsh --turns 60
+#   → ui/web/terra_run.html をブラウザで開くと再生（依存ライブラリ無し）
+
 # テスト
 python tests/test_core.py     # または: python -m pytest tests
 ```
@@ -87,5 +91,13 @@ $/kg・火星費用・EDL/航行の失敗率・火星自立度を書き換える
 
 自律進行では「遮蔽なしで火星へ→太陽嵐で乗員全滅→遮蔽を解禁→次の嵐を耐え抜き火星到達」というドラマが創発する。
 
-## これから（M4〜）
-Act I〜IIIの縦スライス（勝敗の付く一本道の調整）、太陽系俯瞰とダッシュボードの可視化。詳細は [docs/game_design.md](docs/game_design.md) §11。
+### M5：可視化 ✅
+決定論エンジンの全履歴を JSON 化し、**依存ライブラリ無しの自己完結 HTML**（`ui/web/index.html`）で再生する。
+- **太陽系俯瞰**：地球・月・火星の公転、**火星打ち上げ窓**の回廊（金の点線）、遷移中の船（△有人/▫無人）。
+- **ライブ・ダッシュボード**：人類指標8種のバー＋スパークライン（補給途絶による地球外人口の窪みなども見える）。
+- **勢力トラッカー**：マイルストン●○・技術・資金・進行中ミッション段階。
+- **年代記フィード**：★偉業/✖事故/⚡神/✦技術/»ミッション を色分け表示、ハイライト演出。
+- **再生コントロール**：再生・一時停止・速度・スクラブ（任意の年へ）。
+
+## これから（M4）
+Act I〜IIIの縦スライス（勝敗の付く一本道の調整）、エンディング分岐の作り込み。詳細は [docs/game_design.md](docs/game_design.md) §11。

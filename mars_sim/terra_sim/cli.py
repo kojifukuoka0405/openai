@@ -179,10 +179,26 @@ def _print_outcome(state: GameState) -> None:
         print(f"  火星到達は未達。先頭は{leader.name_ja}（進出力{leader.spacefaring:.0f}）。")
 
 
+def run_viz(args) -> None:
+    """観測モードを走らせ、可視化用データと自己完結HTMLを書き出す（M5）。"""
+    from pathlib import Path
+
+    from . import viz
+
+    run = viz.build_run(args.nation, seed=args.seed, turns=args.turns,
+                        fate=args.fate, doctrine=args.doctrine, start_year=args.start_year)
+    out = Path(args.out) if args.out else (viz.WEB_DIR / "terra_run.html")
+    viz.write_json(run, viz.WEB_DIR / "run.json")
+    viz.write_standalone_html(run, out)
+    print(f"可視化データを書き出しました：")
+    print(f"  自己完結HTML : {out}（ブラウザで開くと太陽系俯瞰＋ダッシュボード＋年代記を再生）")
+    print(f"  JSON         : {viz.WEB_DIR / 'run.json'}（ui/web/index.html を http 配信する場合に使用）")
+
+
 def build_parser() -> argparse.ArgumentParser:
     nations = list(load_nations().keys())
-    p = argparse.ArgumentParser(description="TERRA ASCENDANT — 火星探査シミュレーション（M0）")
-    p.add_argument("--mode", choices=["observer", "campaign"], default="observer")
+    p = argparse.ArgumentParser(description="TERRA ASCENDANT — 火星探査シミュレーション")
+    p.add_argument("--mode", choices=["observer", "campaign", "viz"], default="observer")
     p.add_argument("--nation", choices=nations, default="japan", help="自国")
     p.add_argument("--turns", type=int, default=30)
     p.add_argument("--seed", type=int, default=0)
@@ -191,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
                    default="balanced", help="観測モードの運命AIの方針")
     p.add_argument("--doctrine", choices=list(DOCTRINES.keys()), default=None,
                    help="観測モードで自国に委任するドクトリン（既定は国別）")
+    p.add_argument("--out", default=None, help="viz モードの出力HTMLパス")
     return p
 
 
@@ -198,6 +215,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.mode == "observer":
         run_observer(args)
+    elif args.mode == "viz":
+        run_viz(args)
     else:
         run_campaign(args)
 

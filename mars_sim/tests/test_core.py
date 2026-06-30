@@ -313,6 +313,25 @@ def test_different_seed_diverges():
     assert a.state.snapshot() != b.state.snapshot()
 
 
+# ---- M5: 可視化用の履歴エクスポート ---------------------------------------
+def test_viz_build_run_shape():
+    from terra_sim import viz
+    run = viz.build_run("japan", seed=3, turns=20, fate="balanced")
+    assert run["meta"]["nation"] == "japan"
+    assert len(run["frames"]) >= 2
+    f = run["frames"][-1]
+    assert {"year", "kpi", "nations", "mars_window"} <= set(f)
+    assert len(f["nations"]) == 3
+    assert "spacefaring" in f["kpi"]
+
+
+def test_viz_deterministic():
+    from terra_sim import viz
+    a = viz.build_run("usa", seed=5, turns=20, fate="harsh")
+    b = viz.build_run("usa", seed=5, turns=20, fate="harsh")
+    assert a == b   # 同一シード→同一履歴（リプレイ可能）
+
+
 # ---- DecisionProvider 抽象：同一エンジンで委任先を差し替えられる ----------
 def test_provider_swap_same_engine():
     # 自国を「慎重」に委任した場合と「拡張」に委任した場合で歴史が変わる

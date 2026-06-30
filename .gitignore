@@ -5,3 +5,7 @@ __pycache__/
 .venv/
 build/
 dist/
+
+# TERRA ASCENDANT 生成物（可視化）
+mars_sim/ui/web/run.json
+mars_sim/ui/web/terra_run.html
