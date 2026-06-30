@@ -34,7 +34,35 @@
 | 観測モード | ドクトリンAIが自走 | 運命AIが自走 | 人類史を鑑賞、肝心な時だけ降臨 |
 | 部分自律（混成） | 任意 | 任意 | 好みの委譲度でカスタム |
 
-## これから
-ドキュメントの MVP ロードマップ（M0: シミュレーションコアの骨格）から実装を始める。
-「数値は data に、ルールは core に、見た目は ui に」を原則とし、
-まずは CLI で「配分 → 時間を進める → 物理と確率で帰結 → 人類指標が動く」コアループを成立させる。
+## 実装（M0：シミュレーションコアの骨格）✅
+「配分 → 時間を進める → 物理と確率で帰結 → 人類指標が動く」コアループが CLI で動く。
+
+```bash
+cd mars_sim
+
+# 観測モード（完全自律進行を鑑賞）— 日本・均衡の運命AIで40年
+python run.py --mode observer --nation japan --fate balanced --turns 40
+
+# 自国AIを差し替え（いつでもAI委任）／運命を苛烈に
+python run.py --mode observer --nation usa --doctrine expansionist --fate harsh
+
+# キャンペーン（自国を直接指示＋神として介入）
+python run.py --mode campaign --nation japan --turns 12
+
+# テスト
+python tests/test_core.py     # または: python -m pytest tests
+```
+
+### コードの構成（`terra_sim/`）
+- `state.py` … 状態モデル（3カ国＋グローバルKPI＋年代記）。`data` 由来の数値を保持。
+- `loader.py` … `data/nations`・`data/events` を読み込む（数値は全て外部 JSON）。
+- `events.py` … events.md のスキーマ語彙をそのまま解釈してKPI/勢力へ効果適用。
+- `providers.py` … **`DecisionProvider` 抽象**。`Human`/`Doctrine`(自国AI)/`Fate`(運命AI) を差し替えるだけで
+  標準プレイ・観測モード・部分自律が同一エンジンで成立（observer_mode.md の必須要件）。
+- `engine.py` … ターンループ（投資→事故判定→マイルストン→神レイヤー→グローバル更新→宇宙の冬）。決定論RNG。
+- `cli.py` … 観測モードの鑑賞表示と、最小のキャンペーン操作。
+
+> 設計原則どおり「数値は data に、ルールは core に、見た目は ui に」。新イベント＝JSON追加だけ。
+
+## これから（M1〜）
+ミッション・パイプライン（打ち上げ窓・遷移・EDL）、技術ツリー、イベント拡充、可視化。詳細は [docs/game_design.md](docs/game_design.md) §11。

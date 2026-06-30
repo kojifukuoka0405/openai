@@ -1,0 +1,73 @@
+[
+  {
+    "id": "econ_boom",
+    "era": "any",
+    "category": "economy",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 8,
+    "trigger": {
+      "type": "god_activated",
+      "min_mandate": 8
+    },
+    "narrative": "資本が宇宙に流れ込む。投資家がこぞって軌道経済に賭ける、稀有な春。",
+    "choices": [
+      {
+        "id": "call_boom",
+        "label": "好況を呼ぶ",
+        "cost": {},
+        "effects": {
+          "factions_all": {
+            "budget_pct": 20
+          },
+          "kpi": {
+            "risk_debt": 5,
+            "public_will": 4
+          }
+        },
+        "uncertainty": []
+      }
+    ],
+    "tone": "boon"
+  },
+  {
+    "id": "econ_bust",
+    "era": "any",
+    "category": "economy",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 8,
+    "trigger": {
+      "type": "god_activated",
+      "min_mandate": 8
+    },
+    "narrative": "バブルが弾ける。公的予算も民間資本も一斉に細る、長い冬の入り口。",
+    "choices": [
+      {
+        "id": "call_bust",
+        "label": "不況を呼ぶ",
+        "cost": {},
+        "effects": {
+          "factions_all": {
+            "budget_pct": -20
+          },
+          "kpi": {
+            "public_will": -5
+          }
+        },
+        "uncertainty": [
+          {
+            "p": 0.4,
+            "label": "市場依存の勢力が大きく失速",
+            "effects": {
+              "kpi": {
+                "cohesion": -4
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "tone": "crisis"
+  }
+]
