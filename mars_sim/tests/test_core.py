@@ -199,6 +199,102 @@ def test_mission_requires_funding():
     assert usa.mission is not None  # 資金があれば着手
 
 
+# ---- M3: イベント拡充と太陽嵐の連動 --------------------------------------
+class _AlwaysRng:
+    def chance(self, p): return True
+    def uniform(self, a, b): return a
+    def choice(self, seq): return seq[0]
+
+
+class _NeverRng:
+    def chance(self, p): return False
+    def uniform(self, a, b): return a
+    def choice(self, seq): return seq[0]
+
+
+def _put_crewed_transit(eng, nation_id):
+    eng.state.nations[nation_id].mission = Mission(
+        template="mars_crewed", dest="mars", kind="crewed",
+        grants="mars_landing", stage="transit", remaining=0, needs_window=True)
+
+
+def test_m3_events_loaded():
+    ids = {e["id"] for e in load_events()}
+    assert {"space_solar_storm", "space_dust_storm", "geo_earth_crisis",
+            "sci_paradigm_shift"} <= ids
+
+
+def test_storm_fail_prob_reduced_by_shielding():
+    eng = make_observer_engine("usa", seed=1)
+    n = eng.state.nations["usa"]
+    bare = eng._storm_fail_prob(n)
+    n.tech.add("radiation_shielding")
+    shielded = eng._storm_fail_prob(n)
+    n.tech.add("closed_loop_eclss")
+    both = eng._storm_fail_prob(n)
+    assert bare == 0.55
+    assert shielded < bare
+    assert both < shielded
+
+
+def test_solar_storm_kills_unshielded_transit_crew():
+    eng = make_observer_engine("usa", seed=1, fate_policy="passive")
+    eng.rng = _AlwaysRng()
+    _put_crewed_transit(eng, "usa")
+    pop_will = eng.state.kpi.public_will
+    eng._h_solar_storm({})
+    assert eng.state.nations["usa"].mission is None              # 撃墜された
+    assert eng.state.kpi.public_will < pop_will                  # 世界世論が下がる
+    assert any("太陽嵐(SPE)に直撃" in e.text for e in eng.state.chronicle)
+
+
+def test_solar_storm_survivable_when_lucky():
+    eng = make_observer_engine("usa", seed=1, fate_policy="passive")
+    eng.rng = _NeverRng()
+    _put_crewed_transit(eng, "usa")
+    eng._h_solar_storm({})
+    assert eng.state.nations["usa"].mission is not None          # 生還（遷移継続）
+
+
+def test_solar_storm_hits_player_and_rivals_alike():
+    # 無差別性：自国も他国も、遷移中なら等しく巻き添え
+    eng = make_observer_engine("usa", seed=1, fate_policy="passive")
+    eng.rng = _AlwaysRng()
+    _put_crewed_transit(eng, "usa")    # 自国
+    _put_crewed_transit(eng, "china")  # 他国
+    eng._h_solar_storm({})
+    assert eng.state.nations["usa"].mission is None
+    assert eng.state.nations["china"].mission is None
+
+
+def test_supply_cutoff_resilience_vs_loss():
+    # 自立度が高ければ耐え、低ければ人を失う
+    eng = make_observer_engine("usa", seed=1, fate_policy="passive")
+    eng.state.nations["usa"].reached.add("mars_landing")
+    eng.state.kpi.offworld_pop = 10
+    event = {"params": {"self_suff_threshold": 60}}
+
+    eng.state.kpi.self_sufficiency = 75
+    eng._h_supply_cutoff(event)
+    assert eng.state.kpi.offworld_pop == 10                      # 耐え抜く
+
+    eng.state.kpi.self_sufficiency = 30
+    eng._h_supply_cutoff(event)
+    assert eng.state.kpi.offworld_pop < 10                       # 自立不足で犠牲
+
+
+def test_harsh_fate_targets_crewed_transit():
+    from terra_sim.events import EventBook
+    from terra_sim.providers import FateProvider
+    eng = make_observer_engine("usa", seed=1)
+    _put_crewed_transit(eng, "usa")
+    eng.state.kpi.mandate = 80
+    fate = FateProvider("harsh", _AlwaysRng())
+    book = EventBook(load_events())
+    decision = fate.god_decision(eng.state, book)
+    assert decision is not None and decision.event_id == "space_solar_storm"
+
+
 # ---- 決定論（リプレイ可能性）---------------------------------------------
 def test_determinism_same_seed_same_history():
     a = make_observer_engine("japan", seed=42, fate_policy="harsh")

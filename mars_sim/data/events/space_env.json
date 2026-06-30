@@ -1,0 +1,44 @@
+[
+  {
+    "id": "space_solar_storm",
+    "era": "any",
+    "category": "space_env",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 10,
+    "tone": "crisis",
+    "handler": "solar_storm",
+    "trigger": { "type": "god_activated", "min_mandate": 10 },
+    "narrative": "太陽が荒れる。いま遷移軌道にある船は、地球磁気圏の外にいる。遮蔽の有無が、乗員の生死を分ける。",
+    "choices": [
+      {
+        "id": "unleash",
+        "label": "太陽嵐を解き放つ",
+        "cost": {},
+        "effects": { "kpi": { "public_will": -2 } },
+        "uncertainty": []
+      }
+    ]
+  },
+  {
+    "id": "space_dust_storm",
+    "era": "any",
+    "category": "space_env",
+    "layer": "god",
+    "scope": "faction",
+    "mandate_cost": 9,
+    "tone": "crisis",
+    "handler": "dust_storm",
+    "trigger": { "type": "god_activated", "min_mandate": 9 },
+    "narrative": "惑星規模の塵嵐が陽光を覆う。火星拠点の太陽光発電が細っていく。",
+    "choices": [
+      {
+        "id": "engulf",
+        "label": "塵嵐で火星を覆う",
+        "cost": {},
+        "effects": {},
+        "uncertainty": []
+      }
+    ]
+  }
+]

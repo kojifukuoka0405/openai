@@ -71,6 +71,12 @@ class Engine:
         self.window_cfg: dict = mdata["mars_window"]
         # M2: 技術ツリー
         self.tech_defs: dict = load_tech()["techs"]
+        # M3: 特殊イベント・ハンドラ（データ駆動の効果語彙では表せない機構）
+        self._event_handlers = {
+            "solar_storm": self._h_solar_storm,
+            "dust_storm": self._h_dust_storm,
+            "supply_cutoff": self._h_supply_cutoff,
+        }
         # 既定：他国は default_doctrine で自律、自国も（observer 用に）自律を仮置き
         self.national_providers = national_providers or {}
         for nid, n in state.nations.items():
@@ -334,7 +340,7 @@ class Engine:
                 break
         n.mission = None
 
-    def _mission_failed(self, n: Nation, stage: str) -> None:
+    def _mission_failed(self, n: Nation, stage: str, cause: str | None = None) -> None:
         m = n.mission
         assert m is not None
         s = self.state
@@ -345,11 +351,77 @@ class Engine:
             n.public_will = clamp(n.public_will - 12)
             s.kpi.public_will = clamp(s.kpi.public_will - 6)
             dest_ja = "火星" if m.dest == "mars" else "月"
-            s.log(f"{n.name_ja}の{dest_ja}有人ミッションが{stage_ja}で失敗——乗員が失われた。世界が沈黙する。", "accident")
+            if cause:
+                s.log(f"{n.name_ja}の{dest_ja}有人ミッションが{cause}に直撃され、乗員が失われた——世界が凍りつく。", "accident")
+            else:
+                s.log(f"{n.name_ja}の{dest_ja}有人ミッションが{stage_ja}で失敗——乗員が失われた。世界が沈黙する。", "accident")
         else:
             n.public_will = clamp(n.public_will - 3)
             s.log(f"{n.name_ja}の無人ミッションが{stage_ja}で失敗。再挑戦へ。", "accident")
         n.mission = None
+
+    # ---- M3: 神レイヤーの特殊ハンドラ -----------------------------------
+    def _storm_fail_prob(self, n: Nation) -> float:
+        """太陽嵐で遷移中の有人船が失われる確率。遮蔽・生命維持技術が下げる。"""
+        fail = 0.55
+        if "radiation_shielding" in n.tech:
+            fail *= 0.3
+        if "closed_loop_eclss" in n.tech:
+            fail *= 0.7
+        return max(0.03, min(0.9, fail))
+
+    def _h_solar_storm(self, event: dict) -> None:
+        """太陽嵐(SPE)：遷移中の有人船を直撃。遮蔽技術が生死を分ける。自国も巻き添え。"""
+        s = self.state
+        hit = 0
+        for n in s.nations.values():
+            m = n.mission
+            if m is None or m.kind != "crewed" or m.stage != "transit":
+                continue
+            hit += 1
+            if self.rng.chance(self._storm_fail_prob(n)):
+                self._mission_failed(n, "transit", cause="太陽嵐(SPE)")
+            else:
+                s.log(f"{n.name_ja}の遷移中の有人船は遮蔽で太陽嵐を耐え抜いた。", "mission")
+        if hit == 0:
+            s.log("太陽嵐が吹き荒れたが、遷移中の有人船は無かった。", "god")
+
+    def _h_dust_storm(self, event: dict) -> None:
+        """火星規模の大塵嵐：太陽光発電が細りエネルギー収支が危機。原子力で緩和。"""
+        s = self.state
+        if not self._has_mars_settlement():
+            s.log("火星規模の大塵嵐。だが火星に拠点はまだ無い。", "god")
+            return
+        mitigated = any("nuclear_thermal" in n.tech for n in s.nations.values())
+        hit = 4 if mitigated else 10
+        s.kpi.self_sufficiency = clamp(s.kpi.self_sufficiency - hit)
+        if mitigated:
+            s.log("火星大塵嵐——発電は細るも、原子力で危機を凌いだ。", "god")
+        else:
+            s.log("火星大塵嵐——太陽光発電が激減。火星拠点のエネルギー収支が危機に陥る。", "accident")
+
+    def _h_supply_cutoff(self, event: dict) -> None:
+        """地球危機による補給途絶：自立度が定住地の生死を分ける（Act IVの核心）。"""
+        s = self.state
+        if not self._has_mars_settlement():
+            s.log("地球規模の危機。だが火星には、まだ守るべき定住地が無かった。", "god")
+            return
+        thr = event.get("params", {}).get("self_suff_threshold", 60)
+        if s.kpi.self_sufficiency >= thr:
+            s.kpi.self_sufficiency = clamp(s.kpi.self_sufficiency + 8)
+            s.kpi.public_will = clamp(s.kpi.public_will + 12)
+            s.log("補給途絶——だが火星は自立で耐え抜いた。真の定住が証明された。", "milestone")
+        else:
+            lost = min(s.kpi.offworld_pop, max(1, int((thr - s.kpi.self_sufficiency) / 5)))
+            s.kpi.offworld_pop -= lost
+            s.kpi.self_sufficiency = clamp(s.kpi.self_sufficiency - 5)
+            s.kpi.public_will = clamp(s.kpi.public_will - 10)
+            s.log(f"補給途絶。火星は自立しておらず、{lost}名を失う危機に陥った。", "accident")
+
+    def _has_mars_settlement(self) -> bool:
+        s = self.state
+        return s.kpi.offworld_pop > 0 and any(
+            "mars_landing" in n.reached for n in s.nations.values())
 
     def _on_milestone(self, n: Nation, key: str, label: str) -> None:
         s = self.state
@@ -397,6 +469,10 @@ class Engine:
         notes = resolve_choice(s, choice, self.rng)
         detail = f"（{notes[0]}）" if notes else ""
         s.log(f"神の介入：{event.get('id')} → {choice.get('label', '')}{detail}", "god")
+        # M3: 特殊機構（太陽嵐・塵嵐・補給途絶など）を実行
+        handler = event.get("handler")
+        if handler and handler in self._event_handlers:
+            self._event_handlers[handler](event)
 
     def _global_update(self) -> None:
         s = self.state

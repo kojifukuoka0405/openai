@@ -1,0 +1,84 @@
+[
+  {
+    "id": "geo_earth_crisis",
+    "era": "act4",
+    "category": "geopolitics",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 16,
+    "tone": "crisis",
+    "handler": "supply_cutoff",
+    "params": { "self_suff_threshold": 60 },
+    "trigger": { "type": "god_activated", "min_mandate": 16 },
+    "narrative": "地球が燃える（戦争・恐慌・疫病）。火星行きの補給船は、今期、来ない。定住地の自立が試される。",
+    "choices": [
+      {
+        "id": "cut_supply",
+        "label": "補給を断ち、世界を試す",
+        "cost": {},
+        "effects": { "factions_all": { "budget_pct": -10 } },
+        "uncertainty": []
+      }
+    ]
+  },
+  {
+    "id": "geo_resource_nationalism",
+    "era": "any",
+    "category": "geopolitics",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 14,
+    "tone": "crisis",
+    "trigger": { "type": "god_activated", "min_mandate": 14 },
+    "narrative": "月や小惑星の資源を巡り、旗が立ち始める。囲い込みが進み、世界は分断へ傾く。",
+    "choices": [
+      {
+        "id": "stoke",
+        "label": "資源ナショナリズムを煽る",
+        "cost": {},
+        "effects": { "kpi": { "cohesion": -15 } },
+        "uncertainty": []
+      }
+    ]
+  },
+  {
+    "id": "geo_international_regime",
+    "era": "any",
+    "category": "geopolitics",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 12,
+    "tone": "boon",
+    "trigger": { "type": "god_activated", "min_mandate": 12 },
+    "narrative": "宇宙開発の国際レジームが結実する。共有と協調の枠組みが、薄く広く全体を底上げする。",
+    "choices": [
+      {
+        "id": "broker",
+        "label": "国際協調レジームを後押しする",
+        "cost": {},
+        "effects": { "kpi": { "cohesion": 14, "knowledge": 3 } },
+        "uncertainty": []
+      }
+    ]
+  },
+  {
+    "id": "sci_paradigm_shift",
+    "era": "any",
+    "category": "science",
+    "layer": "god",
+    "scope": "global",
+    "mandate_cost": 18,
+    "tone": "boon",
+    "trigger": { "type": "god_activated", "min_mandate": 18 },
+    "narrative": "科学のパラダイムが転換する。新たな地平が一斉に開け、世界の知が跳ね上がる。",
+    "choices": [
+      {
+        "id": "ignite",
+        "label": "パラダイム転換を起こす",
+        "cost": {},
+        "effects": { "kpi": { "knowledge": 12, "public_will": 4 } },
+        "uncertainty": []
+      }
+    ]
+  }
+]

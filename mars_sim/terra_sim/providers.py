@@ -151,7 +151,14 @@ class FateProvider(DecisionProvider):
                 return GodDecision(self.rng.choice(candidates)["id"])
             return None
         if self.policy == "harsh":
-            # ドラマ重視：Mandate が貯まれば積極的に危機を投げて世界を試す
+            # ドラマ重視：遷移中の有人船があれば太陽嵐を狙い撃つ（自国も巻き添えになりうる）
+            crewed_transit = any(
+                n.mission is not None and n.mission.kind == "crewed"
+                and n.mission.stage == "transit" for n in state.nations.values())
+            storm = next((e for e in candidates if e.get("handler") == "solar_storm"), None)
+            if crewed_transit and storm and self.rng.chance(0.6):
+                return GodDecision(storm["id"])
+            # それ以外は積極的に危機を投げて世界を試す
             if crises and m >= 30 and self.rng.chance(0.40):
                 return GodDecision(self.rng.choice(crises)["id"])
             return None
