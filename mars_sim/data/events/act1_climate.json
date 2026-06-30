@@ -1,0 +1,49 @@
+{
+  "id": "clim_megadrought",
+  "era": "act1",
+  "category": "climate",
+  "layer": "god",
+  "scope": "global",
+  "mandate_cost": 12,
+  "trigger": { "type": "god_activated", "min_mandate": 12 },
+  "narrative": "連動する熱波と干ばつが複数大陸を襲う。各国の予算に『足元優先』の圧力がかかる。だが報道は静かに問いかける——我々の揺りかごは、いつまで安全なのか。",
+  "choices": [
+    {
+      "id": "let_it_test",
+      "label": "そのまま世界を試す（放置）",
+      "cost": {},
+      "effects": {
+        "factions_all": { "budget_pct": -15 },
+        "kpi": { "public_will": -8 },
+        "flags": { "backup_planet_sentiment": 1 }
+      },
+      "uncertainty": []
+    },
+    {
+      "id": "national_response",
+      "label": "自国を災害対応に全振りする",
+      "cost": { "funding": "national_space_budget_divert" },
+      "effects": {
+        "faction_self": { "public_will": 10, "spacefaring": -10 },
+        "kpi": { "cohesion": 5 }
+      },
+      "uncertainty": []
+    },
+    {
+      "id": "lead_relief",
+      "label": "国際救援を主導し外交点に変える",
+      "cost": { "influence": 20 },
+      "effects": {
+        "kpi": { "cohesion": 12 },
+        "trust_to_player_all": 8
+      },
+      "uncertainty": [
+        {
+          "p": 0.3,
+          "label": "救援失敗で批判を浴びる",
+          "effects": { "kpi": { "public_will": -10, "cohesion": -5 } }
+        }
+      ]
+    }
+  ]
+}
