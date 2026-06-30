@@ -5,21 +5,25 @@
     "moon_crewed": {
       "dest": "moon", "kind": "crewed", "grants": "lunar_base",
       "requires_capacity": 40, "build_turns": 1, "transit_turns": 0, "needs_window": false,
+      "base_cost": 55,
       "failure": { "ascent": 0.06, "transit": 0.03, "edl": 0.10 }
     },
     "moon_isru": {
       "dest": "moon", "kind": "cargo", "grants": "lunar_isru",
       "requires_capacity": 55, "build_turns": 1, "transit_turns": 0, "needs_window": false,
+      "base_cost": 45,
       "failure": { "ascent": 0.06, "transit": 0.0, "edl": 0.08 }
     },
     "mars_crewed": {
       "dest": "mars", "kind": "crewed", "grants": "mars_landing",
       "requires_capacity": 72, "build_turns": 2, "transit_turns": 1, "needs_window": true,
+      "base_cost": 130, "mars": true,
       "failure": { "ascent": 0.06, "transit": 0.06, "edl": 0.45 }
     },
     "mars_settle": {
       "dest": "mars", "kind": "cargo", "grants": "mars_settlement",
       "requires_capacity": 88, "build_turns": 2, "transit_turns": 1, "needs_window": true,
+      "base_cost": 110, "mars": true,
       "failure": { "ascent": 0.05, "transit": 0.04, "edl": 0.30 }
     }
   },

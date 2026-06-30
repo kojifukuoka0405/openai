@@ -13,7 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 from terra_sim.engine import Engine, EventBook_from_data, make_observer_engine
 from terra_sim.events import EventBook, apply_effects
-from terra_sim.loader import load_events, load_missions, load_nations, new_game
+from terra_sim.loader import load_events, load_missions, load_nations, load_tech, new_game
 from terra_sim.providers import DoctrineProvider, FateProvider, ScriptedGodProvider
 from terra_sim.rng import Rng
 from terra_sim.state import Mission
@@ -141,6 +141,62 @@ def test_crewed_failure_costs_public_will():
             before = True
     # 失敗が起きたケースで検証済み（起きなければスキップ扱い）
     assert before in (True, None)
+
+
+# ---- M2: 経済と技術ツリー -------------------------------------------------
+def test_tech_tree_loaded_with_prereqs():
+    techs = load_tech()["techs"]
+    assert "reusable_launch" in techs
+    assert techs["isru_propellant"]["requires"] == ["isru_water"]
+
+
+def test_research_unlocks_over_time():
+    eng = make_observer_engine("usa", seed=4, fate_policy="balanced")
+    eng.run(30)
+    usa = eng.state.nations["usa"]
+    assert len(usa.tech) >= 2  # 30年で複数の技術を解禁
+    assert any(e.kind == "tech" for e in eng.state.chronicle)
+
+
+def test_reusable_launch_lowers_mission_cost():
+    eng = make_observer_engine("usa", seed=1)
+    usa = eng.state.nations["usa"]
+    tmpl = eng.templates["moon_crewed"]
+    base = eng._mission_cost(usa, tmpl)
+    usa.tech.add("reusable_launch")           # 再使用ロケットを解禁
+    assert eng._mission_cost(usa, tmpl) < base  # $/kg が下がり費用減
+
+
+def test_isru_propellant_lowers_mars_cost():
+    eng = make_observer_engine("japan", seed=1)
+    jp = eng.state.nations["japan"]
+    mars = eng.templates["mars_crewed"]
+    base = eng._mission_cost(jp, mars)
+    jp.tech.update(["isru_water", "isru_propellant"])
+    assert eng._mission_cost(jp, mars) < base   # 現地推進剤で火星費用が下がる
+
+
+def test_edl_tech_reduces_failure_prob():
+    eng = make_observer_engine("usa", seed=1)
+    usa = eng.state.nations["usa"]
+    mods_before = eng._tech_mods(usa)["edl_fail_mult"]
+    usa.tech.add("precision_edl")
+    mods_after = eng._tech_mods(usa)["edl_fail_mult"]
+    assert mods_after < mods_before == 1.0
+
+
+def test_mission_requires_funding():
+    # 資金ゼロでは能力が足りていてもミッションに着手できない
+    eng = make_observer_engine("usa", seed=1, fate_policy="passive")
+    usa = eng.state.nations["usa"]
+    usa.spacefaring = 60.0   # LEO 後・月有人の能力は十分
+    usa.reached.add("leo_economy")
+    usa.treasury = 0.0
+    eng._maybe_launch(usa)
+    assert usa.mission is None
+    usa.treasury = 9999.0
+    eng._maybe_launch(usa)
+    assert usa.mission is not None  # 資金があれば着手
 
 
 # ---- 決定論（リプレイ可能性）---------------------------------------------

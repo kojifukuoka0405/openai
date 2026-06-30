@@ -41,7 +41,8 @@ def print_dashboard(state: GameState) -> None:
                         "transit": "遷移中", "edl": "着陸接近"}.get(n.mission.stage, n.mission.stage)
             mission = f"  ⟳{_dest_ja(n.mission)}{stage_ja}"
         print(f"   {tag} {n.name_ja:4s} 予算{n.budget:5.1f} 技術{n.capability:5.1f} "
-              f"進出{n.spacefaring:5.1f} リスク{n.risk_debt:4.1f}  到達[{ms}]{mission}")
+              f"進出{n.spacefaring:5.1f} 資金{n.treasury:5.0f} 研究{len(n.tech)} "
+              f"リスク{n.risk_debt:4.1f}  到達[{ms}]{mission}")
 
 
 def _dest_ja(mission) -> str:
@@ -98,8 +99,17 @@ class CliHumanProvider(DecisionProvider):
         edl = template["failure"]["edl"]
         win = "（火星窓を待って出発）" if template["needs_window"] else ""
         print(f"\n[{state.year}年] {nation.name_ja}：{dest_ja}{kind_ja}ミッションに着手可能"
-              f"（着陸失敗基礎率{edl:.0%}・技術{nation.capability:.0f}）{win}")
+              f"（着陸失敗基礎率{edl:.0%}・技術{nation.capability:.0f}・資金{nation.treasury:.0f}）{win}")
         return _ask_int("  着手する？ 1)はい 0)見送る（既定1）: ", default=1, lo=0, hi=1) == 1
+
+    def choose_research(self, state, nation, available):
+        if not available:
+            return None
+        print(f"\n[{state.year}年] {nation.name_ja}：次の研究を選択（研究中の技術が解禁されると新たな選択肢が開く）")
+        for i, (tid, defn) in enumerate(available, 1):
+            print(f"  {i}) {defn['name_ja']}（{defn['branch']}・cost{defn['cost']}） — {defn.get('flavor','')[:28]}…")
+        sel = _ask_int(f"  選択 (1-{len(available)}, 既定1): ", default=1, lo=1, hi=len(available))
+        return available[sel - 1][0]
 
 
 def _ask_int(prompt: str, *, default: int, lo: int, hi: int) -> int:

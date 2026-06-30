@@ -46,6 +46,11 @@ def load_missions() -> dict[str, Any]:
     return _read_json(DATA_DIR / "missions" / "missions.json")
 
 
+def load_tech() -> dict[str, Any]:
+    """技術ツリー定義を返す（M2）。"""
+    return _read_json(DATA_DIR / "tech" / "tech_tree.json")
+
+
 def build_nation(defn: dict[str, Any], *, is_player: bool) -> Nation:
     """JSON 定義から動的ステータス付きの Nation を生成する。"""
     p = defn["params"]

@@ -54,8 +54,8 @@ python tests/test_core.py     # または: python -m pytest tests
 ```
 
 ### コードの構成（`terra_sim/`）
-- `state.py` … 状態モデル（3カ国＋グローバルKPI＋ミッション＋年代記）。`data` 由来の数値を保持。
-- `loader.py` … `data/nations`・`data/events`・`data/missions` を読み込む（数値は全て外部 JSON）。
+- `state.py` … 状態モデル（3カ国＋グローバルKPI＋ミッション＋経済/技術＋年代記）。`data` 由来の数値を保持。
+- `loader.py` … `data/nations`・`data/events`・`data/missions`・`data/tech` を読み込む（数値は全て外部 JSON）。
 - `events.py` … events.md のスキーマ語彙をそのまま解釈してKPI/勢力へ効果適用。
 - `providers.py` … **`DecisionProvider` 抽象**。`Human`/`Doctrine`(自国AI)/`Fate`(運命AI) を差し替えるだけで
   標準プレイ・観測モード・部分自律が同一エンジンで成立（observer_mode.md の必須要件）。
@@ -70,5 +70,12 @@ python tests/test_core.py     # または: python -m pytest tests
 マイルストン（月拠点・月ISRU・火星到達・火星定住）はミッション成功で獲得する。
 実際の自律進行では「火星EDL失敗で乗員喪失→再挑戦→次の窓で人類初の火星到達」といったドラマが創発する。
 
-## これから（M2〜）
-経済と技術ツリー、イベント拡充、太陽嵐と遷移中ミッションの連動、可視化。詳細は [docs/game_design.md](docs/game_design.md) §11。
+### M2：経済と技術ツリー ✅
+予算は毎ターン**ミッション積立資金**になり、ミッションは「基礎費用 × $/kg係数（民間層・再使用で低下）× 火星係数（ISRU）」を消費する。
+資金が足りなければ能力が足りても着手できない（save→launch のリズム）。技術ツリー9種を研究で解禁し、
+$/kg・火星費用・EDL/航行の失敗率・火星自立度を書き換える。**研究投資が文字どおりミッションの生死を分ける**
+（例：精密EDL＋逆推進を解禁してから火星に挑むと着陸失敗率が大きく下がる）。ドクトリンごとに研究分野の優先が異なり、
+キャンペーンでは研究対象をプレイヤーが選ぶ。
+
+## これから（M3〜）
+イベント拡充、太陽嵐と遷移中ミッションの連動、Act縦スライス、可視化。詳細は [docs/game_design.md](docs/game_design.md) §11。

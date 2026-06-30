@@ -47,11 +47,16 @@ class GodDecision:
 # space_ratio と内訳重み、協調傾向、launch_buffer（ミッション着手の慎重さ）。
 # observer_mode.md ダイヤル①に対応。buffer が小さいほど早く（リスクを取って）打つ。
 DOCTRINES: dict[str, dict[str, Any]] = {
-    "cautious":     {"space_ratio": 0.50, "w": (0.40, 0.30, 0.30), "diplo": 0.15, "buffer": 14},
-    "expansionist": {"space_ratio": 0.80, "w": (0.30, 0.55, 0.15), "diplo": 0.05, "buffer": 0},
-    "cooperative":  {"space_ratio": 0.60, "w": (0.40, 0.35, 0.25), "diplo": 0.55, "buffer": 8},
-    "commercial":   {"space_ratio": 0.70, "w": (0.30, 0.50, 0.20), "diplo": 0.20, "buffer": 4},
-    "balanced":     {"space_ratio": 0.65, "w": (0.34, 0.33, 0.33), "diplo": 0.25, "buffer": 8},
+    "cautious":     {"space_ratio": 0.50, "w": (0.40, 0.30, 0.30), "diplo": 0.15, "buffer": 14,
+                     "research": ["edl", "life_support", "radiation", "isru", "launch", "propulsion"]},
+    "expansionist": {"space_ratio": 0.80, "w": (0.30, 0.55, 0.15), "diplo": 0.05, "buffer": 0,
+                     "research": ["launch", "propulsion", "edl", "isru", "life_support", "radiation"]},
+    "cooperative":  {"space_ratio": 0.60, "w": (0.40, 0.35, 0.25), "diplo": 0.55, "buffer": 8,
+                     "research": ["isru", "life_support", "launch", "edl", "radiation", "propulsion"]},
+    "commercial":   {"space_ratio": 0.70, "w": (0.30, 0.50, 0.20), "diplo": 0.20, "buffer": 4,
+                     "research": ["launch", "isru", "edl", "propulsion", "life_support", "radiation"]},
+    "balanced":     {"space_ratio": 0.65, "w": (0.34, 0.33, 0.33), "diplo": 0.25, "buffer": 8,
+                     "research": ["launch", "isru", "edl", "life_support", "radiation", "propulsion"]},
 }
 
 
@@ -73,6 +78,12 @@ class DecisionProvider:
                        template: dict[str, Any]) -> bool:
         """着手条件を満たしたとき、実際に打つかの最終確認（自律は True）。"""
         return True
+
+    # ---- M2: 研究対象の選択 ----
+    def choose_research(self, state: GameState, nation: Nation,
+                        available: list[tuple[str, dict[str, Any]]]) -> str | None:
+        """解禁可能な技術 [(id, defn), ...] から次に研究するものを選ぶ。"""
+        return available[0][0] if available else None
 
 
 class DoctrineProvider(DecisionProvider):
@@ -102,6 +113,17 @@ class DoctrineProvider(DecisionProvider):
 
     def launch_buffer(self) -> float:
         return float(DOCTRINES[self.doctrine]["buffer"])
+
+    def choose_research(self, state, nation, available):
+        if not available:
+            return None
+        # ドクトリンの分野優先順位で、最も優先度の高い分野の技術を選ぶ
+        priority = DOCTRINES[self.doctrine]["research"]
+        available.sort(key=lambda t: (
+            priority.index(t[1]["branch"]) if t[1]["branch"] in priority else 99,
+            t[1]["cost"],
+        ))
+        return available[0][0]
 
 
 class FateProvider(DecisionProvider):

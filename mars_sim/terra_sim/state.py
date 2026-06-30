@@ -70,9 +70,16 @@ class Nation:
     reached: set[str] = field(default_factory=set)  # 達成済みマイルストン
     mission: "Mission | None" = None                 # 進行中ミッション（M1）
 
+    # 経済・技術（M2）
+    treasury: float = 0.0                            # ミッション購入用の積立資金
+    tech: set[str] = field(default_factory=set)      # 解禁済み技術
+    research_target: str | None = None               # 現在研究中の技術
+    research_points: float = 0.0                      # 研究の蓄積ポイント
+
     def snapshot(self) -> dict[str, Any]:
         d = asdict(self)
         d["reached"] = sorted(self.reached)
+        d["tech"] = sorted(self.tech)
         return d
 
 
@@ -107,6 +114,8 @@ class ChronicleEntry:
             "accident": "✖",
             "god": "⚡",
             "diplomacy": "🤝",
+            "tech": "✦",
+            "mission": "»",
         }.get(self.kind, "・")
         return f"{self.year}年 {mark} {self.text}"
 

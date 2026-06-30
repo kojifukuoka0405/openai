@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from .events import EventBook, resolve_choice
-from .loader import load_missions
+from .loader import load_missions, load_tech
 from .providers import (
     DecisionProvider,
     DoctrineProvider,
@@ -44,6 +44,10 @@ ACCIDENT_PER_RISK = 0.006  # リスク負債1あたりの追加事故確率
 MANDATE_REGEN = 1.0        # 毎ターンの天命回復
 BUDGET_REVERT = 0.06       # 予算が基準値へ回帰する速さ（一度の不況で永続しない）
 WINTER_WILL = 15.0         # この世界世論を割ると「宇宙の冬」
+# M2 経済・研究
+INCOME_SCALE = 0.55        # 予算→ミッション積立資金（treasury）への変換
+RESEARCH_SCALE = 0.55      # 予算→研究ポイントへの変換
+DOLLAR_COMMERCIAL = 300.0  # $/kg を下げる民間打ち上げ層の効き（大きいほど緩やか）
 
 
 class Engine:
@@ -65,6 +69,8 @@ class Engine:
         mdata = load_missions()
         self.templates: dict = mdata["templates"]
         self.window_cfg: dict = mdata["mars_window"]
+        # M2: 技術ツリー
+        self.tech_defs: dict = load_tech()["techs"]
         # 既定：他国は default_doctrine で自律、自国も（observer 用に）自律を仮置き
         self.national_providers = national_providers or {}
         for nid, n in state.nations.items():
@@ -131,6 +137,63 @@ class Engine:
                 for o in self.state.others:
                     o.trust_to_player = clamp(o.trust_to_player + 1.0, 0, 200)
 
+        # M2: 経済（ミッション積立）と研究（技術解禁）
+        self._economy_and_research(n, d)
+
+    def _economy_and_research(self, n: Nation, d: NationalDecision) -> None:
+        # ミッション購入用の資金を積み立てる
+        n.treasury += n.budget * d.space_ratio * INCOME_SCALE
+        # 研究ポイントを蓄積し、対象技術が貯まれば解禁
+        provider = self.national_providers[n.id]
+        if n.research_target is None or n.research_target in n.tech:
+            avail = self._available_tech(n)
+            n.research_target = provider.choose_research(self.state, n, avail)
+        if n.research_target is None:
+            return
+        n.research_points += n.budget * d.space_ratio * d.w_rd * RESEARCH_SCALE
+        cost = self.tech_defs[n.research_target]["cost"]
+        if n.research_points >= cost:
+            n.research_points -= cost
+            tid = n.research_target
+            n.tech.add(tid)
+            n.research_target = None
+            name = self.tech_defs[tid]["name_ja"]
+            first = sum(1 for o in self.state.nations.values() if tid in o.tech) == 1
+            tag = "人類初・" if first else ""
+            self.state.kpi.knowledge = clamp(self.state.kpi.knowledge + (4 if first else 1.5))
+            self.state.log(f"{tag}{n.name_ja}が「{name}」を実用化。", "tech")
+
+    def _available_tech(self, n: Nation) -> list[tuple[str, dict]]:
+        """前提を満たし未解禁の技術の一覧 [(id, defn), ...]。"""
+        out = []
+        for tid, defn in self.tech_defs.items():
+            if tid in n.tech:
+                continue
+            if all(req in n.tech for req in defn.get("requires", [])):
+                out.append((tid, defn))
+        return out
+
+    def _tech_mods(self, n: Nation) -> dict[str, float]:
+        """解禁済み技術を集約したパラメータ修正子。"""
+        mods = {"dollar_per_kg_mult": 1.0, "mars_cost_mult": 1.0,
+                "edl_fail_mult": 1.0, "transit_fail_mult": 1.0, "selfsuff_bonus": 0.0}
+        for tid in n.tech:
+            for k, v in self.tech_defs[tid]["effects"].items():
+                if k.endswith("_mult"):
+                    mods[k] = mods.get(k, 1.0) * v
+                else:
+                    mods[k] = mods.get(k, 0.0) + v
+        return mods
+
+    def _mission_cost(self, n: Nation, tmpl: dict) -> float:
+        """ミッションの資金費用 = 基礎費用 × $/kg係数（民間層・再使用で低下）× 火星係数（ISRU等）。"""
+        mods = self._tech_mods(n)
+        dollar = (1 - n.commercial / DOLLAR_COMMERCIAL) * mods["dollar_per_kg_mult"]
+        cost = tmpl.get("base_cost", 50) * dollar
+        if tmpl.get("mars"):
+            cost *= mods["mars_cost_mult"]
+        return cost
+
     def _accident_check(self, n: Nation) -> None:
         p = ACCIDENT_BASE + ACCIDENT_PER_RISK * n.risk_debt
         if not self.rng.chance(min(0.6, p)):
@@ -193,8 +256,13 @@ class Engine:
         buffer = provider.launch_buffer()
         if n.spacefaring < tmpl["requires_capacity"] + buffer:
             return
+        # M2: 資金が足りなければ着手せず積み立てを続ける
+        cost = self._mission_cost(n, tmpl)
+        if n.treasury < cost:
+            return
         if not provider.confirm_launch(self.state, n, template_id, tmpl):
             return
+        n.treasury -= cost
         n.mission = Mission(
             template=template_id, dest=tmpl["dest"], kind=tmpl["kind"],
             grants=tmpl["grants"], stage="build",
@@ -204,9 +272,9 @@ class Engine:
         kind_ja = {"crewed": "有人", "cargo": "無人補給"}.get(tmpl["kind"], tmpl["kind"])
         self.state.log(f"{n.name_ja}が{dest_ja}{kind_ja}ミッションの建造を開始。", "mission")
 
-    def _fail_prob(self, n: Nation, base: float) -> float:
-        """段階失敗確率：技術成熟度が下げ、リスク負債が上げる。"""
-        p = base * (1 + n.risk_debt * 0.015) * (1 - (n.capability - 80) * 0.005)
+    def _fail_prob(self, n: Nation, base: float, mult: float = 1.0) -> float:
+        """段階失敗確率：技術成熟度・専用技術(mult)が下げ、リスク負債が上げる。"""
+        p = base * mult * (1 + n.risk_debt * 0.015) * (1 - (n.capability - 80) * 0.005)
         return max(0.01, min(0.9, p))
 
     def _advance_mission(self, n: Nation) -> None:
@@ -239,16 +307,19 @@ class Engine:
             if m.remaining > 0:
                 m.remaining -= 1
                 return
-            # 遷移完了 → 有人は航行リスク（生命維持・放射線）
-            if m.kind == "crewed" and self.rng.chance(self._fail_prob(n, tmpl["failure"]["transit"])):
+            # 遷移完了 → 有人は航行リスク（生命維持・放射線を技術で低減）
+            mods = self._tech_mods(n)
+            if m.kind == "crewed" and self.rng.chance(
+                    self._fail_prob(n, tmpl["failure"]["transit"], mods["transit_fail_mult"])):
                 self._mission_failed(n, "transit")
                 return
             m.stage = "edl"
             return
 
         if m.stage == "edl":
-            # EDL（突入・降下・着陸）— 火星最大の難所
-            if self.rng.chance(self._fail_prob(n, tmpl["failure"]["edl"])):
+            # EDL（突入・降下・着陸）— 火星最大の難所。精密EDL/逆推進で低減
+            mods = self._tech_mods(n)
+            if self.rng.chance(self._fail_prob(n, tmpl["failure"]["edl"], mods["edl_fail_mult"])):
                 self._mission_failed(n, "edl")
                 return
             self._mission_succeeded(n)
@@ -339,9 +410,11 @@ class Engine:
         # 世界世論は穏やかに基準回帰、天命は時間で回復（協調が高いほど速い）
         s.kpi.public_will = clamp(s.kpi.public_will + (50 - s.kpi.public_will) * 0.03)
         s.kpi.mandate = clamp(s.kpi.mandate + MANDATE_REGEN + s.kpi.cohesion * 0.01)
-        # 火星定住地があれば、知識と協調に応じて自立度がゆっくり育つ
+        # 火星定住地があれば、知識・協調・ISRU等の技術に応じて自立度が育つ
         if s.kpi.offworld_pop > 0 and any("mars_landing" in n.reached for n in s.nations.values()):
-            s.kpi.self_sufficiency = clamp(s.kpi.self_sufficiency + 0.3 + s.kpi.knowledge * 0.01)
+            isru_bonus = max(self._tech_mods(n)["selfsuff_bonus"] for n in s.nations.values())
+            s.kpi.self_sufficiency = clamp(
+                s.kpi.self_sufficiency + 0.3 + s.kpi.knowledge * 0.01 + isru_bonus)
 
     def _winter_check(self) -> None:
         s = self.state

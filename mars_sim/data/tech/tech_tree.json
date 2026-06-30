@@ -1,0 +1,55 @@
+{
+  "_comment": "技術ツリー（M2）。実在技術ベース（原理実証済み or 理論的に妥当）。研究で解禁し、解禁すると effects がパラメータを書き換える。",
+  "_effects": "*_mult は乗算（複数技術で積）、*_bonus は加算。dollar_per_kg_mult=打ち上げ$/kg、mars_cost_mult=火星ミッション費用、edl_fail_mult/transit_fail_mult=段階失敗率、selfsuff_bonus=火星自立度の毎ターン加算。",
+  "techs": {
+    "reusable_launch": {
+      "name_ja": "再使用ロケット", "branch": "launch", "cost": 28, "requires": [],
+      "effects": { "dollar_per_kg_mult": 0.55 },
+      "flavor": "一段目を回収・再飛行し、打ち上げコストを桁で下げる。"
+    },
+    "propellant_depot": {
+      "name_ja": "軌道間燃料デポ", "branch": "launch", "cost": 38, "requires": ["reusable_launch"],
+      "effects": { "mars_cost_mult": 0.85 },
+      "flavor": "軌道上で燃料を給油し、遠方ミッションの所要質量を減らす。"
+    },
+    "isru_water": {
+      "name_ja": "水氷ISRU採掘", "branch": "isru", "cost": 32, "requires": [],
+      "effects": { "selfsuff_bonus": 0.25 },
+      "flavor": "現地の水氷を採掘・電解。生命維持と推進剤の素を現地調達する。"
+    },
+    "isru_propellant": {
+      "name_ja": "Sabatier推進剤合成", "branch": "isru", "cost": 50, "requires": ["isru_water"],
+      "effects": { "mars_cost_mult": 0.65, "selfsuff_bonus": 0.45 },
+      "flavor": "火星大気のCO₂から帰還燃料を現地生成。火星ミッションの費用を一変させる。"
+    },
+    "closed_loop_eclss": {
+      "name_ja": "閉鎖生命維持(ECLSS)", "branch": "life_support", "cost": 40, "requires": [],
+      "effects": { "transit_fail_mult": 0.6, "selfsuff_bonus": 0.35 },
+      "flavor": "水と空気をほぼ閉ループで再生し、長期航行と定住を支える。"
+    },
+    "precision_edl": {
+      "name_ja": "精密EDL", "branch": "edl", "cost": 44, "requires": [],
+      "effects": { "edl_fail_mult": 0.6 },
+      "flavor": "誘導突入と着陸精度の向上で、火星着陸の成功率を引き上げる。"
+    },
+    "supersonic_retroprop": {
+      "name_ja": "超音速逆推進着陸", "branch": "edl", "cost": 56, "requires": ["precision_edl"],
+      "effects": { "edl_fail_mult": 0.45 },
+      "flavor": "薄い大気で重い機体を着けるための逆噴射技術。大質量着陸を可能にする。"
+    },
+    "radiation_shielding": {
+      "name_ja": "放射線遮蔽", "branch": "radiation", "cost": 34, "requires": [],
+      "effects": { "transit_fail_mult": 0.7 },
+      "flavor": "水/レゴリスによる遮蔽と避難シェルターで、航行中の被曝リスクを下げる。"
+    },
+    "nuclear_thermal": {
+      "name_ja": "核熱推進(NTP)", "branch": "propulsion", "cost": 72, "requires": ["propellant_depot"],
+      "effects": { "mars_cost_mult": 0.8, "transit_fail_mult": 0.85 },
+      "flavor": "高比推力で遷移を効率化。火星への所要質量と航行リスクを下げる。"
+    }
+  },
+  "branch_ja": {
+    "launch": "打ち上げ", "isru": "ISRU", "life_support": "生命維持",
+    "edl": "EDL", "radiation": "放射線", "propulsion": "推進"
+  }
+}
