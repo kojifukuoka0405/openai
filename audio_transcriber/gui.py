@@ -1,0 +1,318 @@
+"""音声文字起こしアプリの GUI。
+
+`python -m audio_transcriber.gui` で起動。
+
+操作の流れ:
+  1. 「音声ファイルを開く」で MP3 / WAV などを選ぶ
+  2. （初回のみ）OpenAI の API キーを入力する
+  3. 「文字起こし開始」を押す
+  4. 「文字起こし」タブに素のテキスト、「推敲版」タブに読みやすく整えた版が出る
+  5. 「保存」でテキストファイルとして書き出す
+"""
+
+from __future__ import annotations
+
+import queue
+import threading
+import traceback
+from pathlib import Path
+from typing import Optional
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
+
+from . import audio, polish as polish_mod, transcribe as transcribe_mod
+from .config import forget_api_key, load_config, resolve_api_key, save_api_key
+from .core import (
+    Options,
+    Result,
+    TranscriberError,
+    format_duration,
+    make_client,
+    transcribe_and_polish,
+    write_outputs,
+)
+
+STYLE_LABELS = {
+    "読みやすい書き言葉": "readable",
+    "話し言葉のまま（最小限）": "verbatim",
+    "記事・議事録スタイル": "article",
+}
+
+FILETYPES = [
+    ("音声ファイル", "*.mp3 *.wav *.m4a *.mp4 *.flac *.ogg *.oga *.webm *.mpga *.mpeg"),
+    ("MP3", "*.mp3"),
+    ("WAV", "*.wav"),
+    ("すべてのファイル", "*.*"),
+]
+
+
+class App(tk.Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("音声文字起こし ＆ 推敲")
+        self.geometry("1000x720")
+        self.minsize(820, 600)
+
+        self.audio_path: Optional[Path] = None
+        self.result: Optional[Result] = None
+        self.queue: "queue.Queue[tuple]" = queue.Queue()
+        self.worker: Optional[threading.Thread] = None
+
+        self._build_widgets()
+        self.after(100, self._drain_queue)
+
+    # ------------------------------------------------------------------ UI
+    def _build_widgets(self) -> None:
+        pad = {"padx": 6, "pady": 4}
+
+        # --- ファイル選択 ---
+        top = ttk.Frame(self)
+        top.pack(fill=tk.X, **pad)
+        ttk.Button(top, text="音声ファイルを開く", command=self.open_file).pack(side=tk.LEFT)
+        self.file_label = ttk.Label(top, text="ファイル未選択")
+        self.file_label.pack(side=tk.LEFT, padx=10)
+
+        # --- API キー ---
+        key_frame = ttk.LabelFrame(self, text="OpenAI API キー")
+        key_frame.pack(fill=tk.X, **pad)
+        stored_key = load_config().get("api_key", "")
+        self.api_key_var = tk.StringVar(value=stored_key)
+        # 環境変数から取れている場合まで勝手にファイル保存はしない
+        self.save_key_var = tk.BooleanVar(value=bool(stored_key))
+        entry = ttk.Entry(key_frame, textvariable=self.api_key_var, show="*", width=60)
+        entry.pack(side=tk.LEFT, padx=6, pady=6)
+        ttk.Checkbutton(
+            key_frame, text="このPCに保存", variable=self.save_key_var
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Label(
+            key_frame,
+            text="環境変数 OPENAI_API_KEY があればそちらを使います",
+            foreground="#666666",
+        ).pack(side=tk.LEFT, padx=6)
+
+        # --- オプション ---
+        opts = ttk.LabelFrame(self, text="設定")
+        opts.pack(fill=tk.X, **pad)
+
+        row1 = ttk.Frame(opts)
+        row1.pack(fill=tk.X, padx=6, pady=4)
+        ttk.Label(row1, text="言語:").pack(side=tk.LEFT)
+        self.language_var = tk.StringVar(value="自動判定")
+        ttk.Combobox(
+            row1, textvariable=self.language_var, width=10, state="readonly",
+            values=["自動判定", "ja", "en", "zh", "ko", "fr", "de", "es"],
+        ).pack(side=tk.LEFT, padx=(4, 16))
+
+        ttk.Label(row1, text="推敲スタイル:").pack(side=tk.LEFT)
+        self.style_var = tk.StringVar(value="読みやすい書き言葉")
+        ttk.Combobox(
+            row1, textvariable=self.style_var, width=22, state="readonly",
+            values=list(STYLE_LABELS),
+        ).pack(side=tk.LEFT, padx=(4, 16))
+
+        self.polish_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row1, text="推敲版も作る", variable=self.polish_var).pack(side=tk.LEFT)
+
+        row2 = ttk.Frame(opts)
+        row2.pack(fill=tk.X, padx=6, pady=4)
+        ttk.Label(row2, text="固有名詞・専門用語（カンマ区切り）:").pack(side=tk.LEFT)
+        self.keywords_var = tk.StringVar()
+        ttk.Entry(row2, textvariable=self.keywords_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=6
+        )
+
+        row3 = ttk.Frame(opts)
+        row3.pack(fill=tk.X, padx=6, pady=4)
+        ttk.Label(row3, text="推敲への追加指示（任意）:").pack(side=tk.LEFT)
+        self.instructions_var = tk.StringVar()
+        ttk.Entry(row3, textvariable=self.instructions_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=6
+        )
+
+        # --- 実行 ---
+        run = ttk.Frame(self)
+        run.pack(fill=tk.X, **pad)
+        self.run_button = ttk.Button(run, text="文字起こし開始", command=self.start)
+        self.run_button.pack(side=tk.LEFT)
+        self.progress = ttk.Progressbar(run, mode="determinate", maximum=100)
+        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        self.status_label = ttk.Label(run, text="待機中")
+        self.status_label.pack(side=tk.LEFT)
+
+        # --- 結果 ---
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, **pad)
+        self.raw_text = self._add_tab("文字起こし（そのまま）")
+        self.polished_text = self._add_tab("推敲版")
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill=tk.X, **pad)
+        ttk.Button(bottom, text="表示中のタブをコピー", command=self.copy_current).pack(side=tk.LEFT)
+        ttk.Button(bottom, text="両方をファイルに保存", command=self.save_outputs).pack(
+            side=tk.LEFT, padx=6
+        )
+        self.info_label = ttk.Label(bottom, text="")
+        self.info_label.pack(side=tk.LEFT, padx=10)
+
+    def _add_tab(self, title: str) -> ScrolledText:
+        frame = ttk.Frame(self.notebook)
+        widget = ScrolledText(frame, wrap=tk.WORD, font=("", 11), undo=True)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(frame, text=title)
+        return widget
+
+    # -------------------------------------------------------------- 操作
+    def open_file(self) -> None:
+        path = filedialog.askopenfilename(title="音声ファイルを選択", filetypes=FILETYPES)
+        if not path:
+            return
+        selected = Path(path)
+        try:
+            audio.check_supported(selected)
+        except audio.AudioError as exc:
+            messagebox.showerror("開けません", str(exc))
+            return
+        self.audio_path = selected
+        size_mb = selected.stat().st_size / (1024 * 1024)
+        duration = audio.probe_duration(selected)
+        detail = f"{selected.name}（{size_mb:.1f}MB"
+        if duration:
+            detail += f" / {format_duration(duration)}"
+        self.file_label.config(text=detail + "）")
+
+    def start(self) -> None:
+        if self.worker is not None and self.worker.is_alive():
+            return
+        if self.audio_path is None:
+            messagebox.showwarning("ファイル未選択", "先に音声ファイルを開いてください。")
+            return
+
+        api_key = self.api_key_var.get().strip()
+        if not resolve_api_key(api_key):
+            messagebox.showwarning(
+                "API キーが必要です",
+                "OpenAI の API キーを入力してください。\n"
+                "https://platform.openai.com/api-keys で発行できます。",
+            )
+            return
+        if api_key and self.save_key_var.get():
+            save_api_key(api_key)
+        elif not self.save_key_var.get():
+            forget_api_key()
+
+        language = self.language_var.get()
+        options = Options(
+            language=None if language == "自動判定" else language,
+            keywords=tuple(
+                k.strip() for k in self.keywords_var.get().split(",") if k.strip()
+            ),
+            style=STYLE_LABELS.get(self.style_var.get(), "readable"),
+            extra_instructions=self.instructions_var.get().strip() or None,
+            do_polish=self.polish_var.get(),
+        )
+
+        self.result = None
+        self.raw_text.delete("1.0", tk.END)
+        self.polished_text.delete("1.0", tk.END)
+        self.info_label.config(text="")
+        self.run_button.config(state=tk.DISABLED)
+        self.progress["value"] = 0
+        self.status_label.config(text="開始しています…")
+
+        path = self.audio_path
+        self.worker = threading.Thread(
+            target=self._work, args=(path, options, api_key), daemon=True
+        )
+        self.worker.start()
+
+    # -------------------------------------------------------- ワーカー
+    def _work(self, path: Path, options: Options, api_key: str) -> None:
+        def progress(done: int, total: int, message: str) -> None:
+            self.queue.put(("progress", done, message))
+
+        try:
+            client = make_client(api_key or None)
+            result = transcribe_and_polish(
+                path, options, client=client, progress=progress
+            )
+            self.queue.put(("done", result))
+        except (TranscriberError, audio.AudioError, transcribe_mod.TranscriptionError,
+                polish_mod.PolishError) as exc:
+            self.queue.put(("error", str(exc)))
+        except Exception as exc:  # noqa: BLE001 - 想定外も UI に出す
+            self.queue.put(("error", f"{exc}\n\n{traceback.format_exc()}"))
+
+    def _drain_queue(self) -> None:
+        try:
+            while True:
+                message = self.queue.get_nowait()
+                kind = message[0]
+                if kind == "progress":
+                    _, percent, text = message
+                    self.progress["value"] = percent
+                    self.status_label.config(text=text)
+                elif kind == "done":
+                    self._on_done(message[1])
+                elif kind == "error":
+                    self.progress["value"] = 0
+                    self.status_label.config(text="エラー")
+                    self.run_button.config(state=tk.NORMAL)
+                    messagebox.showerror("処理に失敗しました", message[1])
+        except queue.Empty:
+            pass
+        self.after(100, self._drain_queue)
+
+    def _on_done(self, result: Result) -> None:
+        self.result = result
+        self.raw_text.delete("1.0", tk.END)
+        self.raw_text.insert("1.0", result.transcript)
+        self.polished_text.delete("1.0", tk.END)
+        self.polished_text.insert("1.0", result.polished or "（推敲版は作成していません）")
+        self.progress["value"] = 100
+        self.status_label.config(text="完了")
+        self.run_button.config(state=tk.NORMAL)
+
+        info = f"モデル: {result.transcribe_model}"
+        if result.polish_model:
+            info += f" ／ 推敲: {result.polish_model}"
+        info += f" ／ 長さ: {format_duration(result.duration)}"
+        info += f" ／ 文字数: {len(result.transcript)}"
+        if result.chunk_count > 1:
+            info += f" ／ 分割: {result.chunk_count}"
+        self.info_label.config(text=info)
+        self.notebook.select(1 if result.polished else 0)
+
+    # ---------------------------------------------------------- 出力
+    def copy_current(self) -> None:
+        widget = self.polished_text if self.notebook.index("current") == 1 else self.raw_text
+        text = widget.get("1.0", tk.END).strip()
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.status_label.config(text="クリップボードにコピーしました")
+
+    def save_outputs(self) -> None:
+        if self.result is None:
+            messagebox.showinfo("保存するものがありません", "先に文字起こしを実行してください。")
+            return
+        outdir = filedialog.askdirectory(title="保存先フォルダを選択")
+        if not outdir:
+            return
+        # 画面上で編集された内容を保存する
+        self.result.transcript = self.raw_text.get("1.0", tk.END).strip()
+        polished = self.polished_text.get("1.0", tk.END).strip()
+        self.result.polished = "" if polished.startswith("（推敲版は") else polished
+        raw_path, polished_path = write_outputs(self.result, outdir)
+        saved = "\n".join(str(p) for p in (raw_path, polished_path) if p)
+        messagebox.showinfo("保存しました", saved)
+
+
+def main() -> None:
+    App().mainloop()
+
+
+if __name__ == "__main__":
+    main()

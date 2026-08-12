@@ -1,4 +1,8 @@
+# pptx-vectorizer 用
 python-pptx>=0.6.21
 opencv-python-headless>=4.5
 numpy>=1.21
 Pillow>=9.0
+
+# audio-transcriber（音声文字起こし＋推敲）用
+openai>=3.0

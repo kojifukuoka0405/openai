@@ -4,21 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pptx-vectorizer"
-version = "0.1.0"
-description = "PPT 内の画像を編集可能な図形オブジェクトに変換するツール（CLI/GUI）"
+version = "0.2.0"
+description = "PPT 内の画像を編集可能な図形に変換するツール＋音声文字起こし/推敲アプリ（CLI/GUI）"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "python-pptx>=0.6.21",
     "opencv-python-headless>=4.5",
     "numpy>=1.21",
+    "openai>=3.0",
 ]
 
 [project.scripts]
 pptx-vectorize = "pptx_vectorizer.cli:main"
+audio-transcribe = "audio_transcriber.cli:main"
 
 [project.gui-scripts]
 pptx-vectorize-gui = "pptx_vectorizer.gui:main"
+audio-transcribe-gui = "audio_transcriber.gui:main"
 
 [tool.setuptools]
-packages = ["pptx_vectorizer"]
+packages = ["pptx_vectorizer", "audio_transcriber"]

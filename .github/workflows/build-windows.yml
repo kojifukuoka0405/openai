@@ -29,21 +29,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build executable
+      - name: Build executable (pptx-vectorizer)
         run: pyinstaller --noconfirm pptx_vectorizer.spec
+
+      - name: Build executable (audio-transcriber)
+        run: pyinstaller --noconfirm audio_transcriber.spec
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pptx-vectorizer-windows
-          path: dist/pptx-vectorizer.exe
+          name: windows-apps
+          path: |
+            dist/pptx-vectorizer.exe
+            dist/audio-transcriber.exe
 
       # タグ push 時は通常リリースへ添付
       - name: Attach to tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/pptx-vectorizer.exe
+          files: |
+            dist/pptx-vectorizer.exe
+            dist/audio-transcriber.exe
 
       # ブランチ push / 手動実行時は固定タグ「windows-latest」のリリースを更新。
       # Release のアセットなら、ログイン不要・スマホでもクリックして DL できる。
@@ -54,8 +61,13 @@ jobs:
           tag_name: windows-latest
           name: Windows 最新ビルド (.exe)
           body: |
-            PPTX 画像→図形 変換ツールの Windows 用実行ファイルです。
-            下の Assets にある `pptx-vectorizer.exe` をクリックしてダウンロードし、
-            ダブルクリックで起動してください（Python のインストール不要）。
+            Windows 用の実行ファイルです（Python のインストール不要）。
+            下の Assets からクリックしてダウンロードし、ダブルクリックで起動してください。
+
+            - `pptx-vectorizer.exe` … PPTX 画像→図形 変換ツール
+            - `audio-transcriber.exe` … 音声文字起こし＋推敲アプリ
+              （初回起動時に OpenAI の API キーを入力してください）
           prerelease: true
-          files: dist/pptx-vectorizer.exe
+          files: |
+            dist/pptx-vectorizer.exe
+            dist/audio-transcriber.exe
