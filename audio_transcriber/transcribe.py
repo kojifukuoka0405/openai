@@ -29,7 +29,7 @@ REQUEST_TIMEOUT = 900.0
 
 # API に渡すが、モデルによっては受け付けない任意パラメータ
 OPTIONAL_PARAMS = (
-    "chunking_strategy", "keywords", "languages", "prompt",
+    "chunking_strategy", "keywords", "languages", "prompt", "response_format",
     "temperature", "timestamp_granularities", "include", "language",
 )
 
