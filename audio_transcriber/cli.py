@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import audio, polish as polish_mod, transcribe as transcribe_mod
+from . import audio, polish as polish_mod, pricing, transcribe as transcribe_mod
 from .core import (
     Options,
     TranscriberError,
@@ -36,11 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "例:\n"
             "  audio-transcribe 会議.mp3\n"
+            "  audio-transcribe --list-models                 # 最新料金でモデルを比較\n"
             "  audio-transcribe 録音.wav -o 出力 --language ja --style article\n"
-            "  audio-transcribe *.mp3 --keywords 'Anthropic,Claude,PoC'\n"
+            "  audio-transcribe 長時間.mp3 --model gpt-4o-mini-transcribe --polish-model gpt-5-nano\n"
         ),
     )
-    p.add_argument("inputs", nargs="+", help="音声ファイル（mp3 / wav / m4a など）")
+    p.add_argument("inputs", nargs="*", help="音声ファイル（mp3 / wav / m4a など）")
     p.add_argument("-o", "--outdir", help="出力先ディレクトリ（既定: 入力と同じ場所）")
     p.add_argument(
         "--model",
@@ -73,11 +74,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--api-key", help="OpenAI API キー（既定: 環境変数 OPENAI_API_KEY）")
     p.add_argument("--print", dest="print_text", action="store_true", help="結果を標準出力にも表示")
+    p.add_argument(
+        "--list-models",
+        action="store_true",
+        help="選べるモデルと最新の料金を表示して終了する",
+    )
+    p.add_argument(
+        "--offline-prices",
+        action="store_true",
+        help="料金の取得をスキップする（キャッシュまたは参考価格を使う）",
+    )
     return p
 
 
 def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # 起動のたびに最新の料金を取り、どのモデルが安いか分かるようにする
+    prices = pricing.load_prices(offline=args.offline_prices)
+    if args.list_models:
+        print(pricing.price_report(prices))
+        return 0
+    if not args.inputs:
+        parser.error("音声ファイルを指定してください（一覧は --list-models）")
+
+    print(prices.origin_label(), file=sys.stderr)
+    print(
+        f"文字起こし: {args.model}（{pricing.format_price(prices, pricing.ModelInfo(args.model, 'transcribe', ''))}）",
+        file=sys.stderr,
+    )
+    if not args.no_polish:
+        print(
+            f"推敲　　　: {args.polish_model}"
+            f"（{pricing.format_price(prices, pricing.ModelInfo(args.polish_model, 'polish', ''))}）",
+            file=sys.stderr,
+        )
 
     options = Options(
         transcribe_model=args.model,
@@ -116,6 +148,16 @@ def main(argv=None) -> int:
             + (f" / 推敲: {result.polish_model}" if result.polish_model else "")
             + f" / 長さ: {format_duration(result.duration)}"
             + f" / 分割: {result.chunk_count}",
+            file=sys.stderr,
+        )
+        print(
+            pricing.format_estimate(
+                prices,
+                result.transcribe_model,
+                result.polish_model,
+                minutes=(result.duration / 60) if result.duration else None,
+                chars=len(result.transcript),
+            ),
             file=sys.stderr,
         )
         print(f"文字起こし: {raw_path}", file=sys.stderr)

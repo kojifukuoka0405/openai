@@ -3,13 +3,14 @@
 API は呼ばず、合成した音声ファイルと偽クライアントで検証する。
 """
 
+import json
 import wave
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from audio_transcriber import audio, core, polish, transcribe
+from audio_transcriber import audio, core, polish, pricing, transcribe
 
 # --------------------------------------------------------------------------
 # 合成データ
@@ -451,6 +452,136 @@ def test_format_duration():
     assert core.format_duration(None) == "不明"
     assert core.format_duration(75) == "1:15"
     assert core.format_duration(3725) == "1:02:05"
+
+
+# --------------------------------------------------------------------------
+# 料金
+# --------------------------------------------------------------------------
+
+FAKE_PRICE_JSON = {
+    "gpt-transcribe": {"input_cost_per_second": 7.5e-05},
+    "gpt-4o-transcribe": {"input_cost_per_audio_token": 2.5e-06},
+    "gpt-4o-mini-transcribe": {"input_cost_per_audio_token": 1.25e-06},
+    "whisper-1": {"input_cost_per_second": 0.0001},
+    "gpt-5.6-sol": {"input_cost_per_token": 5e-06, "output_cost_per_token": 3e-05},
+    "gpt-5.6-luna": {"input_cost_per_token": 2e-07, "output_cost_per_token": 1.2e-06},
+    "gpt-5-nano": {"input_cost_per_token": 5e-08, "output_cost_per_token": 4e-07},
+    "gpt-4.1-nano": {"input_cost_per_token": 1e-07, "output_cost_per_token": 4e-07},
+    "無関係なモデル": {"input_cost_per_token": 1.0},
+}
+
+
+def _table(origin="live"):
+    return pricing.PriceTable(prices=dict(FAKE_PRICE_JSON), origin=origin, fetched_at=0)
+
+
+def test_fetch_prices_keeps_only_known_models(monkeypatch):
+    class FakeResponse:
+        def read(self):
+            return json.dumps(FAKE_PRICE_JSON).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(pricing.urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    prices = pricing.fetch_prices()
+    assert "gpt-transcribe" in prices
+    assert "無関係なモデル" not in prices     # 対象モデルだけ残す
+
+
+def test_load_prices_falls_back_to_builtin(monkeypatch, tmp_path):
+    def boom(*args, **kwargs):
+        raise OSError("ネットワークに接続できません")
+
+    monkeypatch.setattr(pricing, "fetch_prices", boom)
+    monkeypatch.setattr(pricing, "CACHE_PATH", tmp_path / "prices.json")
+    table = pricing.load_prices()
+    assert table.origin == "builtin"
+    assert "参考価格" in table.origin_label()
+    assert table.transcribe_cost_per_minute("gpt-transcribe") is not None
+
+
+def test_load_prices_uses_cache_when_offline(monkeypatch, tmp_path):
+    cache = tmp_path / "prices.json"
+    cache.write_text(
+        json.dumps({"fetched_at": 0, "prices": FAKE_PRICE_JSON}), encoding="utf-8"
+    )
+    monkeypatch.setattr(pricing, "CACHE_PATH", cache)
+    table = pricing.load_prices(offline=True)
+    assert table.origin == "cache"
+    assert "前回取得した価格" in table.origin_label()
+
+
+def test_price_conversions():
+    table = _table()
+    # 1 秒あたり課金 → 1 分あたり
+    assert table.transcribe_cost_per_minute("gpt-transcribe") == pytest.approx(0.0045)
+    # 音声トークン課金 → 1 分あたり
+    assert table.transcribe_cost_per_minute("gpt-4o-transcribe") == pytest.approx(0.006)
+    assert table.polish_cost_per_mtok("gpt-5.6-sol") == pytest.approx((5.0, 30.0))
+    assert table.transcribe_cost_per_minute("存在しないモデル") is None
+
+
+def test_cheapest_models_are_sorted_by_price():
+    table = _table()
+    cheap = pricing.cheapest_models(table, "transcribe", 3)
+    assert [m.name for m in cheap] == [
+        "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-4o-transcribe"
+    ]
+    cheap_polish = [m.name for m in pricing.cheapest_models(table, "polish", 3)]
+    assert cheap_polish[0] == "gpt-5-nano"
+    assert "gpt-5.6-sol" not in cheap_polish        # 最高品質＝最安ではない
+
+
+def test_selectable_models_include_default_and_cheap():
+    table = _table()
+    names = [m.name for m in pricing.selectable_models(table, "polish", "gpt-5.6-sol")]
+    assert names[0] == "gpt-5.6-sol"               # 既定は先頭
+    assert "gpt-5-nano" in names                   # 安いものも選べる
+    assert len(names) == len(set(names))           # 重複しない
+
+    # 既定が最安でもある場合は重複させない
+    names = [m.name for m in pricing.selectable_models(table, "polish", "gpt-5-nano")]
+    assert names.count("gpt-5-nano") == 1
+
+
+def test_choice_roundtrip():
+    table = _table()
+    model = pricing.TRANSCRIBE_MODELS[0]
+    choice = pricing.format_choice(table, model)
+    assert "$" in choice
+    assert pricing.model_from_choice(choice) == model.name
+
+
+def test_estimate_costs():
+    table = _table()
+    # 60 分 × $0.0045/分
+    assert table.estimate_transcribe("gpt-transcribe", 60) == pytest.approx(0.27)
+    cheap = table.estimate_polish("gpt-5-nano", minutes=60)
+    expensive = table.estimate_polish("gpt-5.6-sol", minutes=60)
+    assert cheap < expensive
+    text = pricing.format_estimate(table, "gpt-transcribe", "gpt-5.6-sol", 60)
+    assert "概算費用" in text and "文字起こし" in text and "推敲" in text
+    assert "推敲" not in pricing.format_estimate(table, "gpt-transcribe", None, 60)
+    assert "不明" in pricing.format_estimate(table, "gpt-transcribe", None, None)
+
+
+def test_price_report_lists_both_kinds():
+    report = pricing.price_report(_table())
+    assert "文字起こしモデル" in report
+    assert "推敲モデル" in report
+    assert "現時点で安い順" in report
+
+
+def test_cli_list_models(monkeypatch, capsys):
+    from audio_transcriber.cli import main
+
+    monkeypatch.setattr(pricing, "load_prices", lambda **kwargs: _table())
+    assert main(["--list-models"]) == 0
+    assert "文字起こしモデル" in capsys.readouterr().out
 
 
 def test_cli_parser_defaults():

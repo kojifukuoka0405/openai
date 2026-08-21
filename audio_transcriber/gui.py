@@ -5,9 +5,10 @@
 操作の流れ:
   1. 「音声ファイルを開く」で MP3 / WAV などを選ぶ
   2. （初回のみ）OpenAI の API キーを入力する
-  3. 「文字起こし開始」を押す
-  4. 「文字起こし」タブに素のテキスト、「推敲版」タブに読みやすく整えた版が出る
-  5. 「保存」でテキストファイルとして書き出す
+  3. モデルを選ぶ（起動時に取得した最新料金と概算費用が出る）
+  4. 「文字起こし開始」を押す
+  5. 「文字起こし」タブに素のテキスト、「推敲版」タブに読みやすく整えた版が出る
+  6. 「保存」でテキストファイルとして書き出す
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from . import audio, polish as polish_mod, transcribe as transcribe_mod
+from . import audio, polish as polish_mod, pricing, transcribe as transcribe_mod
 from .config import forget_api_key, load_config, resolve_api_key, save_api_key
 from .core import (
     Options,
@@ -56,12 +57,16 @@ class App(tk.Tk):
         self.minsize(820, 600)
 
         self.audio_path: Optional[Path] = None
+        self.audio_duration: Optional[float] = None
         self.result: Optional[Result] = None
         self.queue: "queue.Queue[tuple]" = queue.Queue()
         self.worker: Optional[threading.Thread] = None
+        # 価格が届くまでは参考価格で表示しておく
+        self.prices = pricing.PriceTable(prices=dict(pricing.BUILTIN_PRICES), origin="builtin")
 
         self._build_widgets()
         self.after(100, self._drain_queue)
+        self.refresh_prices()          # 起動のたびに最新料金を取りにいく
 
     # ------------------------------------------------------------------ UI
     def _build_widgets(self) -> None:
@@ -92,6 +97,39 @@ class App(tk.Tk):
             foreground="#666666",
         ).pack(side=tk.LEFT, padx=6)
 
+        # --- モデルと料金 ---
+        models = ttk.LabelFrame(self, text="モデルと料金")
+        models.pack(fill=tk.X, **pad)
+
+        price_row = ttk.Frame(models)
+        price_row.pack(fill=tk.X, padx=6, pady=4)
+        self.price_label = ttk.Label(price_row, text="料金を取得しています…", foreground="#666666")
+        self.price_label.pack(side=tk.LEFT)
+        ttk.Button(price_row, text="価格を再取得", command=self.refresh_prices).pack(side=tk.RIGHT)
+
+        model_row = ttk.Frame(models)
+        model_row.pack(fill=tk.X, padx=6, pady=4)
+        ttk.Label(model_row, text="文字起こし:", width=12).pack(side=tk.LEFT)
+        self.transcribe_model_var = tk.StringVar()
+        self.transcribe_combo = ttk.Combobox(
+            model_row, textvariable=self.transcribe_model_var, state="readonly"
+        )
+        self.transcribe_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.transcribe_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_estimate())
+
+        polish_row = ttk.Frame(models)
+        polish_row.pack(fill=tk.X, padx=6, pady=4)
+        ttk.Label(polish_row, text="推敲:", width=12).pack(side=tk.LEFT)
+        self.polish_model_var = tk.StringVar()
+        self.polish_combo = ttk.Combobox(
+            polish_row, textvariable=self.polish_model_var, state="readonly"
+        )
+        self.polish_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.polish_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_estimate())
+
+        self.estimate_label = ttk.Label(models, text="概算費用: ファイルを選ぶと表示されます")
+        self.estimate_label.pack(anchor=tk.W, padx=6, pady=(0, 6))
+
         # --- オプション ---
         opts = ttk.LabelFrame(self, text="設定")
         opts.pack(fill=tk.X, **pad)
@@ -113,7 +151,10 @@ class App(tk.Tk):
         ).pack(side=tk.LEFT, padx=(4, 16))
 
         self.polish_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row1, text="推敲版も作る", variable=self.polish_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            row1, text="推敲版も作る", variable=self.polish_var,
+            command=self.update_estimate,
+        ).pack(side=tk.LEFT)
 
         row2 = ttk.Frame(opts)
         row2.pack(fill=tk.X, padx=6, pady=4)
@@ -156,12 +197,85 @@ class App(tk.Tk):
         self.info_label = ttk.Label(bottom, text="")
         self.info_label.pack(side=tk.LEFT, padx=10)
 
+        # 最新料金が届くまでは、内蔵の参考価格で選択肢を作っておく
+        self._fill_model_combo(
+            self.transcribe_combo, self.transcribe_model_var,
+            "transcribe", transcribe_mod.DEFAULT_TRANSCRIBE_MODEL,
+        )
+        self._fill_model_combo(
+            self.polish_combo, self.polish_model_var,
+            "polish", polish_mod.DEFAULT_POLISH_MODEL,
+        )
+
     def _add_tab(self, title: str) -> ScrolledText:
         frame = ttk.Frame(self.notebook)
         widget = ScrolledText(frame, wrap=tk.WORD, font=("", 11), undo=True)
         widget.pack(fill=tk.BOTH, expand=True)
         self.notebook.add(frame, text=title)
         return widget
+
+    # ------------------------------------------------------------ 料金
+    def refresh_prices(self) -> None:
+        """最新の料金をバックグラウンドで取得する（画面は止めない）。"""
+        self.price_label.config(text="料金を取得しています…")
+
+        def work() -> None:
+            table = pricing.load_prices()
+            self.queue.put(("prices", table))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_prices(self, table: pricing.PriceTable) -> None:
+        """取得した料金を、選択肢と表示に反映する。"""
+        self.prices = table
+        self.price_label.config(text=table.origin_label())
+        self._fill_model_combo(
+            self.transcribe_combo, self.transcribe_model_var,
+            "transcribe", transcribe_mod.DEFAULT_TRANSCRIBE_MODEL,
+        )
+        self._fill_model_combo(
+            self.polish_combo, self.polish_model_var,
+            "polish", polish_mod.DEFAULT_POLISH_MODEL,
+        )
+        self.update_estimate()
+
+    def _fill_model_combo(self, combo: ttk.Combobox, var: tk.StringVar,
+                          kind: str, default: str) -> None:
+        """「既定のモデル＋いま安い 3 種類」を選択肢にする。"""
+        models = pricing.selectable_models(self.prices, kind, default)
+        choices = [pricing.format_choice(self.prices, m) for m in models]
+        current = pricing.model_from_choice(var.get()) if var.get() else default
+        combo["values"] = choices
+        for choice, model in zip(choices, models):
+            if model.name == current:
+                var.set(choice)
+                return
+        var.set(choices[0] if choices else default)
+
+    def selected_model(self, var: tk.StringVar, default: str) -> str:
+        return pricing.model_from_choice(var.get()) if var.get() else default
+
+    def update_estimate(self) -> None:
+        """選んだモデルと録音の長さから概算費用を出す。"""
+        if self.audio_duration is None:
+            self.estimate_label.config(
+                text="概算費用: ファイルを選ぶと表示されます"
+                if self.audio_path is None
+                else "概算費用: 不明（長さを取得できませんでした）"
+            )
+            return
+        transcribe_model = self.selected_model(
+            self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
+        )
+        polish_model = (
+            self.selected_model(self.polish_model_var, polish_mod.DEFAULT_POLISH_MODEL)
+            if self.polish_var.get() else None
+        )
+        self.estimate_label.config(
+            text=pricing.format_estimate(
+                self.prices, transcribe_model, polish_model, self.audio_duration / 60
+            )
+        )
 
     # -------------------------------------------------------------- 操作
     def open_file(self) -> None:
@@ -177,10 +291,12 @@ class App(tk.Tk):
         self.audio_path = selected
         size_mb = selected.stat().st_size / (1024 * 1024)
         duration = audio.probe_duration(selected)
+        self.audio_duration = duration
         detail = f"{selected.name}（{size_mb:.1f}MB"
         if duration:
             detail += f" / {format_duration(duration)}"
         self.file_label.config(text=detail + "）")
+        self.update_estimate()
 
     def start(self) -> None:
         if self.worker is not None and self.worker.is_alive():
@@ -204,6 +320,12 @@ class App(tk.Tk):
 
         language = self.language_var.get()
         options = Options(
+            transcribe_model=self.selected_model(
+                self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
+            ),
+            polish_model=self.selected_model(
+                self.polish_model_var, polish_mod.DEFAULT_POLISH_MODEL
+            ),
             language=None if language == "自動判定" else language,
             keywords=tuple(
                 k.strip() for k in self.keywords_var.get().split(",") if k.strip()
@@ -253,6 +375,8 @@ class App(tk.Tk):
                     _, percent, text = message
                     self.progress["value"] = percent
                     self.status_label.config(text=text)
+                elif kind == "prices":
+                    self._apply_prices(message[1])
                 elif kind == "done":
                     self._on_done(message[1])
                 elif kind == "error":
@@ -282,6 +406,17 @@ class App(tk.Tk):
         if result.chunk_count > 1:
             info += f" ／ 分割: {result.chunk_count}"
         self.info_label.config(text=info)
+
+        # 実際の長さと文字数で費用を計算し直す
+        self.estimate_label.config(
+            text=pricing.format_estimate(
+                self.prices,
+                result.transcribe_model,
+                result.polish_model,
+                minutes=(result.duration / 60) if result.duration else None,
+                chars=len(result.transcript),
+            )
+        )
         self.notebook.select(1 if result.polished else 0)
 
     # ---------------------------------------------------------- 出力
