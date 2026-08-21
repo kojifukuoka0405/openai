@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import audio, polish as polish_mod, pricing, transcribe as transcribe_mod
+from . import audio, polish as polish_mod, pricing, providers, transcribe as transcribe_mod
 from .core import (
     Options,
     TranscriberError,
@@ -100,8 +100,10 @@ def main(argv=None) -> int:
         parser.error("音声ファイルを指定してください（一覧は --list-models）")
 
     print(prices.origin_label(), file=sys.stderr)
+    transcribe_info = pricing.ModelInfo(args.model, "transcribe", "")
     print(
-        f"文字起こし: {args.model}（{pricing.format_price(prices, pricing.ModelInfo(args.model, 'transcribe', ''))}）",
+        f"文字起こし: {args.model}（{transcribe_info.provider_label} / "
+        f"{pricing.format_price(prices, transcribe_info)}）",
         file=sys.stderr,
     )
     if not args.no_polish:
@@ -122,10 +124,16 @@ def main(argv=None) -> int:
         max_seconds=args.max_seconds,
     )
 
-    try:
-        client = make_client(args.api_key)
-    except TranscriberError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+    # OpenAI のキーは「OpenAI で文字起こしする」か「推敲する」ときだけ必要
+    client = None
+    if options.do_polish or providers.provider_of(args.model) == providers.DEFAULT_PROVIDER:
+        try:
+            client = make_client(args.api_key)
+        except TranscriberError as exc:
+            print(f"エラー: {exc}", file=sys.stderr)
+            return 2
+    if providers.resolve_key(args.model) is None:
+        print(f"エラー: {providers.missing_key_message(args.model)}", file=sys.stderr)
         return 2
 
     failures = 0

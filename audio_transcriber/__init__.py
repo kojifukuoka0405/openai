@@ -1,8 +1,8 @@
 """audio_transcriber: 音声ファイルを高精度に文字起こしし、推敲版も出力するツール。
 
-- 文字起こし: OpenAI の `gpt-transcribe`（公開されている最高精度クラスの
-  音声認識モデル）。使えない環境では `gpt-4o-transcribe` → `whisper-1` に自動で
-  切り替える。
+- 文字起こし: 6 社のモデルから選べる（OpenAI / Google Gemini / Groq /
+  AssemblyAI / ElevenLabs / Deepgram）。既定は最高精度の `gpt-transcribe`、
+  起動時に取得した実価格で「そのとき最も安いモデル」も選択肢に並ぶ。
 - 推敲: `gpt-5.6` 系で、内容を変えずにフィラー削除・句読点・段落・表記ゆれを整える。
 - MP3 / WAV は標準ライブラリだけで分割できるので、長い録音でも追加ツールなしで動く。
 """
@@ -18,6 +18,7 @@ from .core import (
     write_outputs,
 )
 from .polish import DEFAULT_POLISH_MODEL, PolishError, polish_text
+from .providers import PROVIDERS, ProviderError, provider_of
 from .pricing import (
     POLISH_MODELS,
     TRANSCRIBE_MODELS,
@@ -40,9 +41,11 @@ __all__ = [
     "DEFAULT_POLISH_MODEL",
     "DEFAULT_TRANSCRIBE_MODEL",
     "Options",
+    "PROVIDERS",
     "POLISH_MODELS",
     "PolishError",
     "PriceTable",
+    "ProviderError",
     "Result",
     "TRANSCRIBE_MODELS",
     "TranscriberError",
@@ -55,6 +58,7 @@ __all__ = [
     "polish_text",
     "prepare_chunks",
     "price_report",
+    "provider_of",
     "probe_duration",
     "selectable_models",
     "transcribe_and_polish",

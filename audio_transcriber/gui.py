@@ -23,8 +23,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from . import audio, polish as polish_mod, pricing, transcribe as transcribe_mod
-from .config import forget_api_key, load_config, resolve_api_key, save_api_key
+from . import audio, polish as polish_mod, pricing, providers, transcribe as transcribe_mod
+from .config import forget_api_key, resolve_api_key, save_api_key, stored_keys
 from .core import (
     Options,
     Result,
@@ -63,6 +63,8 @@ class App(tk.Tk):
         self.worker: Optional[threading.Thread] = None
         # 価格が届くまでは参考価格で表示しておく
         self.prices = pricing.PriceTable(prices=dict(pricing.BUILTIN_PRICES), origin="builtin")
+        self.provider_keys: dict = dict(stored_keys())
+        self.key_provider: Optional[str] = None
 
         self._build_widgets()
         self.after(100, self._drain_queue)
@@ -79,21 +81,41 @@ class App(tk.Tk):
         self.file_label = ttk.Label(top, text="ファイル未選択")
         self.file_label.pack(side=tk.LEFT, padx=10)
 
-        # --- API キー ---
-        key_frame = ttk.LabelFrame(self, text="OpenAI API キー")
-        key_frame.pack(fill=tk.X, **pad)
-        stored_key = load_config().get("api_key", "")
-        self.api_key_var = tk.StringVar(value=stored_key)
-        # 環境変数から取れている場合まで勝手にファイル保存はしない
-        self.save_key_var = tk.BooleanVar(value=bool(stored_key))
-        entry = ttk.Entry(key_frame, textvariable=self.api_key_var, show="*", width=60)
-        entry.pack(side=tk.LEFT, padx=6, pady=6)
-        ttk.Checkbutton(
-            key_frame, text="このPCに保存", variable=self.save_key_var
+        # --- API キー（選んだモデルの会社ぶんだけ表示する） ---
+        self.key_frame = ttk.LabelFrame(self, text="API キー")
+        self.key_frame.pack(fill=tk.X, **pad)
+
+        self.transcribe_key_row = ttk.Frame(self.key_frame)
+        self.transcribe_key_label = ttk.Label(self.transcribe_key_row, width=24)
+        self.transcribe_key_label.pack(side=tk.LEFT)
+        self.transcribe_key_var = tk.StringVar()
+        ttk.Entry(
+            self.transcribe_key_row, textvariable=self.transcribe_key_var,
+            show="*", width=52,
         ).pack(side=tk.LEFT, padx=6)
+        self.save_transcribe_key_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.transcribe_key_row, text="このPCに保存",
+            variable=self.save_transcribe_key_var,
+        ).pack(side=tk.LEFT)
+        self.transcribe_key_hint = ttk.Label(self.transcribe_key_row, foreground="#666666")
+        self.transcribe_key_hint.pack(side=tk.LEFT, padx=6)
+
+        self.openai_key_row = ttk.Frame(self.key_frame)
+        self.openai_key_row.pack(fill=tk.X, padx=6, pady=4)
+        self.openai_key_label = ttk.Label(self.openai_key_row, width=24)
+        self.openai_key_label.pack(side=tk.LEFT)
+        self.openai_key_var = tk.StringVar(value=stored_keys().get("openai", ""))
+        ttk.Entry(
+            self.openai_key_row, textvariable=self.openai_key_var, show="*", width=52,
+        ).pack(side=tk.LEFT, padx=6)
+        # 環境変数から取れている場合まで勝手にファイル保存はしない
+        self.save_openai_key_var = tk.BooleanVar(value=bool(stored_keys().get("openai")))
+        ttk.Checkbutton(
+            self.openai_key_row, text="このPCに保存", variable=self.save_openai_key_var,
+        ).pack(side=tk.LEFT)
         ttk.Label(
-            key_frame,
-            text="環境変数 OPENAI_API_KEY があればそちらを使います",
+            self.openai_key_row, text="環境変数があればそちらを使います",
             foreground="#666666",
         ).pack(side=tk.LEFT, padx=6)
 
@@ -115,7 +137,7 @@ class App(tk.Tk):
             model_row, textvariable=self.transcribe_model_var, state="readonly"
         )
         self.transcribe_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.transcribe_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_estimate())
+        self.transcribe_combo.bind("<<ComboboxSelected>>", lambda _e: self.on_model_changed())
 
         polish_row = ttk.Frame(models)
         polish_row.pack(fill=tk.X, padx=6, pady=4)
@@ -206,6 +228,7 @@ class App(tk.Tk):
             self.polish_combo, self.polish_model_var,
             "polish", polish_mod.DEFAULT_POLISH_MODEL,
         )
+        self.sync_key_rows()
 
     def _add_tab(self, title: str) -> ScrolledText:
         frame = ttk.Frame(self.notebook)
@@ -243,7 +266,8 @@ class App(tk.Tk):
                           kind: str, default: str) -> None:
         """「既定のモデル＋いま安い 3 種類」を選択肢にする。"""
         models = pricing.selectable_models(self.prices, kind, default)
-        choices = [pricing.format_choice(self.prices, m) for m in models]
+        keys = self.provider_keys if hasattr(self, "provider_keys") else None
+        choices = [pricing.format_choice(self.prices, m, keys) for m in models]
         current = pricing.model_from_choice(var.get()) if var.get() else default
         combo["values"] = choices
         for choice, model in zip(choices, models):
@@ -254,6 +278,53 @@ class App(tk.Tk):
 
     def selected_model(self, var: tk.StringVar, default: str) -> str:
         return pricing.model_from_choice(var.get()) if var.get() else default
+
+    def on_model_changed(self) -> None:
+        """文字起こしモデルが変わったとき: キー欄と概算を更新する。"""
+        self.sync_key_rows()
+        self.update_estimate()
+
+    def sync_key_rows(self) -> None:
+        """選んだモデルの会社に合わせて、必要な API キー欄だけを出す。"""
+        model = self.selected_model(
+            self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
+        )
+        provider = providers.get_provider(model)
+
+        # 入力途中のキーは会社ごとに覚えておく（切り替えても消えない）
+        if self.key_provider and self.key_provider != providers.DEFAULT_PROVIDER:
+            self.provider_keys[self.key_provider] = self.transcribe_key_var.get().strip()
+
+        if provider.key == providers.DEFAULT_PROVIDER:
+            self.transcribe_key_row.pack_forget()
+            self.openai_key_label.config(text="OpenAI（文字起こし・推敲）")
+        else:
+            self.transcribe_key_row.pack(fill=tk.X, padx=6, pady=4,
+                                         before=self.openai_key_row)
+            self.transcribe_key_label.config(text=f"文字起こし（{provider.label}）")
+            self.transcribe_key_var.set(self.provider_keys.get(provider.key, ""))
+            self.save_transcribe_key_var.set(bool(stored_keys().get(provider.key)))
+            has_key = providers.resolve_key(model, self.provider_keys) is not None
+            self.transcribe_key_hint.config(
+                text=f"{provider.env_var} でも可" if has_key
+                else f"未設定：{provider.signup_url}"
+            )
+            self.openai_key_label.config(text="推敲（OpenAI）")
+        self.key_provider = provider.key
+
+    def current_api_keys(self) -> dict:
+        """画面に入力されているキーをまとめる。"""
+        keys = dict(self.provider_keys)
+        model = self.selected_model(
+            self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
+        )
+        provider = providers.provider_of(model)
+        if provider != providers.DEFAULT_PROVIDER:
+            keys[provider] = self.transcribe_key_var.get().strip()
+        openai_key = self.openai_key_var.get().strip()
+        if openai_key:
+            keys["openai"] = openai_key
+        return {k: v for k, v in keys.items() if v}
 
     def update_estimate(self) -> None:
         """選んだモデルと録音の長さから概算費用を出す。"""
@@ -305,24 +376,33 @@ class App(tk.Tk):
             messagebox.showwarning("ファイル未選択", "先に音声ファイルを開いてください。")
             return
 
-        api_key = self.api_key_var.get().strip()
-        if not resolve_api_key(api_key):
+        transcribe_model = self.selected_model(
+            self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
+        )
+        api_keys = self.current_api_keys()
+        do_polish = self.polish_var.get()
+
+        # 文字起こしに使う会社のキー
+        if providers.resolve_key(transcribe_model, api_keys) is None:
             messagebox.showwarning(
-                "API キーが必要です",
-                "OpenAI の API キーを入力してください。\n"
-                "https://platform.openai.com/api-keys で発行できます。",
+                "API キーが必要です", providers.missing_key_message(transcribe_model)
             )
             return
-        if api_key and self.save_key_var.get():
-            save_api_key(api_key)
-        elif not self.save_key_var.get():
-            forget_api_key()
+        # 推敲は OpenAI を使う
+        if do_polish and not resolve_api_key(api_keys.get("openai")):
+            messagebox.showwarning(
+                "API キーが必要です",
+                "推敲には OpenAI の API キーが必要です。\n"
+                "「推敲版も作る」のチェックを外せば、文字起こしだけ実行できます。\n"
+                "キーは https://platform.openai.com/api-keys で発行できます。",
+            )
+            return
+
+        self._persist_keys(transcribe_model, api_keys)
 
         language = self.language_var.get()
         options = Options(
-            transcribe_model=self.selected_model(
-                self.transcribe_model_var, transcribe_mod.DEFAULT_TRANSCRIBE_MODEL
-            ),
+            transcribe_model=transcribe_model,
             polish_model=self.selected_model(
                 self.polish_model_var, polish_mod.DEFAULT_POLISH_MODEL
             ),
@@ -332,7 +412,7 @@ class App(tk.Tk):
             ),
             style=STYLE_LABELS.get(self.style_var.get(), "readable"),
             extra_instructions=self.instructions_var.get().strip() or None,
-            do_polish=self.polish_var.get(),
+            do_polish=do_polish,
         )
 
         self.result = None
@@ -345,19 +425,40 @@ class App(tk.Tk):
 
         path = self.audio_path
         self.worker = threading.Thread(
-            target=self._work, args=(path, options, api_key), daemon=True
+            target=self._work, args=(path, options, api_keys), daemon=True
         )
         self.worker.start()
 
+    def _persist_keys(self, transcribe_model: str, api_keys: dict) -> None:
+        """「このPCに保存」にチェックがあるキーだけ保存する。"""
+        openai_key = api_keys.get("openai", "")
+        if openai_key and self.save_openai_key_var.get():
+            save_api_key(openai_key, "openai")
+        elif not self.save_openai_key_var.get():
+            forget_api_key("openai")
+
+        provider = providers.provider_of(transcribe_model)
+        if provider == providers.DEFAULT_PROVIDER:
+            return
+        key = api_keys.get(provider, "")
+        if key and self.save_transcribe_key_var.get():
+            save_api_key(key, provider)
+        elif not self.save_transcribe_key_var.get():
+            forget_api_key(provider)
+
     # -------------------------------------------------------- ワーカー
-    def _work(self, path: Path, options: Options, api_key: str) -> None:
+    def _work(self, path: Path, options: Options, api_keys: dict) -> None:
         def progress(done: int, total: int, message: str) -> None:
             self.queue.put(("progress", done, message))
 
         try:
-            client = make_client(api_key or None)
+            client = None
+            if options.do_polish or providers.provider_of(
+                options.transcribe_model
+            ) == providers.DEFAULT_PROVIDER:
+                client = make_client(api_keys.get("openai") or None)
             result = transcribe_and_polish(
-                path, options, client=client, progress=progress
+                path, options, client=client, progress=progress, api_keys=api_keys
             )
             self.queue.put(("done", result))
         except (TranscriberError, audio.AudioError, transcribe_mod.TranscriptionError,

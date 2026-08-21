@@ -3,7 +3,7 @@
 | ツール | 内容 | 起動 |
 |---|---|---|
 | [pptx-vectorizer](#pptx-vectorizer) | PPTX 内の画像を編集可能な図形に変換 | `run_gui.py` |
-| [audio-transcriber](#audio-transcriber音声文字起こし--推敲) | 音声ファイルを文字起こし＋推敲版を出力 | `run_transcriber.py` |
+| [audio-transcriber](#audio-transcriber音声文字起こし--推敲) | 音声を6社のAIモデルから選んで文字起こし＋推敲版を出力 | `run_transcriber.py` |
 
 ---
 
@@ -150,37 +150,61 @@ python -m pytest tests/ -q
 
 音声ファイルをアップロードすると、**そのままの文字起こし**と、**読みやすく推敲した版**の
 2 つを出力するアプリです。MP3 / WAV に対応（そのほか m4a・mp4・flac・ogg・webm も可）。
+文字起こしは **6 社の AI モデル**から用途と料金で選べます。
 
-## モデルを選べます（最新料金つき）
+## 6 つのAIモデルから選べます（起動時に最新料金を取得）
 
-**起動のたびに最新の料金を取得**して画面と CLI に表示します。選択肢は
-**「既定＝最高品質のモデル」＋「そのとき最も安い 3 種類」**を自動で選抜するので、
-価格改定や新モデルが出ても、常にその時点で賢い選択ができます。
+文字起こしは **6 社 6 モデル**から用途に応じて選べます。選択肢は
+**「既定＝最高精度」＋「そのとき安い順（1 社 1 モデルずつ）」**を
+起動時の実価格から自動で選抜するので、価格改定や新モデルが出ても常に賢く選べます。
 
-| 用途 | 既定（最高品質） | 選択肢に出る安価なモデル（例） |
+アプリに並ぶ 6 つ（2026-08-21 時点の実勢価格）:
+
+| モデル | 会社 | 音声1時間あたり | 用途 |
+|---|---|---|---|
+| `gpt-transcribe` | OpenAI | 約 $0.27 | 最高精度・迷ったらこれ（既定） |
+| `groq/whisper-large-v3-turbo` | Groq | 約 **$0.04** | **最安**・高速。長時間の録音向き |
+| `gemini/gemini-3.1-flash-lite` | Google Gemini | 約 $0.06 | 格安・多言語 |
+| `assemblyai/best` | AssemblyAI | 約 $0.12 | 文字起こし専業ベンダの高精度モデル |
+| `elevenlabs/scribe_v1` | ElevenLabs | 約 $0.22 | 専業・多言語に強い |
+| `deepgram/nova-3` | Deepgram | 約 $0.26 | 専業・高速 |
+
+`--list-models` では、上記に加えて `gpt-4o-mini-transcribe`・`gemini/gemini-3.5-flash`・
+`groq/whisper-large-v3`・`whisper-1`・`gpt-4o-transcribe-diarize`（話者分離）なども
+料金つきで比較でき、`--model` でそのまま指定できます。
+
+推敲は OpenAI の `gpt-5.6-sol`（既定）を使い、こちらも
+「既定＋いま安い 3 種類」（`gpt-5-nano` など）から選べます。
+
+### 料金の扱い
+
+- 料金は [LiteLLM の公開価格表](https://github.com/BerriAI/litellm) から
+  **起動のたびに取得**します（各社に機械可読な価格 API がないため）。
+  取得できないときは「前回取得した価格」→「内蔵の参考価格」の順に切り替え、
+  **どの価格を表示しているかを画面に明記**します
+- 選んだモデルと録音の長さから **概算費用** をその場で表示します
+  （例: `概算費用: 約 $0.825（文字起こし $0.040 ＋ 推敲 $0.785）`）
+- 一覧と最新料金は CLI でも確認できます: `python -m audio_transcriber --list-models`
+
+### API キー
+
+**使うモデルの会社のキーだけ**あれば動きます。GUI は選んだモデルに合わせて
+必要なキー欄だけを表示し、未設定のモデルには一覧で「要APIキー」と出ます。
+
+| 会社 | 環境変数 | キー発行 |
 |---|---|---|
-| 文字起こし | `gpt-transcribe` | `gpt-4o-mini-transcribe` / `gpt-4o-transcribe` / `whisper-1` |
-| 推敲 | `gpt-5.6-sol` | `gpt-5-nano` / `gpt-4.1-nano` / `gpt-4o-mini` |
+| OpenAI | `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
+| Google Gemini | `GEMINI_API_KEY` | https://aistudio.google.com/apikey |
+| Groq | `GROQ_API_KEY` | https://console.groq.com/keys |
+| AssemblyAI | `ASSEMBLYAI_API_KEY` | https://www.assemblyai.com/app/api-keys |
+| ElevenLabs | `ELEVENLABS_API_KEY` | https://elevenlabs.io/app/settings/api-keys |
+| Deepgram | `DEEPGRAM_API_KEY` | https://console.deepgram.com/ |
 
-参考（2026-08-21 時点の実勢価格）:
+推敲は OpenAI を使うため、推敲版も作る場合は `OPENAI_API_KEY` が必要です
+（「推敲版も作る」のチェックを外せば、他社モデルだけで文字起こしできます）。
 
-| モデル | 料金 |
-|---|---|
-| `gpt-transcribe` | 音声1時間 約 $0.27（最高精度） |
-| `gpt-4o-mini-transcribe` | 音声1時間 約 $0.18（最安） |
-| `gpt-5.6-sol` | 100万トークン 入力 $5.00 / 出力 $30.00 |
-| `gpt-5-nano` | 100万トークン 入力 $0.05 / 出力 $0.40 |
-
-- 料金は [LiteLLM の公開価格表](https://github.com/BerriAI/litellm) から取得します
-  （OpenAI に機械可読な価格 API がないため）。取得できないときは
-  「前回取得した価格」→「内蔵の参考価格」の順に切り替え、**どの価格を表示しているかを画面に明記**します
-- 選んだモデルと録音の長さから **概算費用**（例: `概算費用: 約 $1.055（文字起こし $0.270 ＋ 推敲 $0.785）`）を
-  実行前に表示します
-- モデル一覧と最新料金は CLI でも確認できます: `python -m audio_transcriber --list-models`
-
-使えないモデルがあった場合は自動でフォールバックします
-（文字起こし: `gpt-4o-transcribe` → `whisper-1` ／ 推敲: `gpt-5.4` → `gpt-5.1` → `gpt-4.1`）。
-`--model` / `--polish-model` には一覧にないモデル名も指定できます。
+OpenAI のモデルを選んだときだけ、使えない場合に
+`gpt-4o-transcribe` → `whisper-1` へ自動フォールバックします。
 
 ## 出力される 2 つのテキスト
 
@@ -198,11 +222,14 @@ python -m pytest tests/ -q
 ```bash
 pip install openai
 export OPENAI_API_KEY="sk-..."      # Windows: setx OPENAI_API_KEY "sk-..."
+export GEMINI_API_KEY="..."         # 他社モデルを使う場合（上の表を参照）
 ```
 
-API キーは https://platform.openai.com/api-keys で発行できます。
+追加のライブラリは不要です（OpenAI と Groq は `openai` パッケージ、
+Gemini・ElevenLabs・Deepgram・AssemblyAI は標準ライブラリだけで呼び出します）。
+
 GUI ではキー欄に貼り付けて「このPCに保存」にチェックを入れると、次回から入力不要です
-（`~/.audio_transcriber/config.json` に本人だけが読める権限で保存）。
+（`~/.audio_transcriber/config.json` に本人だけが読める権限で会社ごとに保存）。
 
 ## 使い方（GUI・おすすめ）
 
@@ -213,12 +240,14 @@ GUI ではキー欄に貼り付けて「このPCに保存」にチェックを�
 | 共通 | ターミナルで `python run_transcriber.py` |
 
 1. 「音声ファイルを開く」で MP3 / WAV を選ぶ
-2. 「モデルと料金」欄で文字起こし／推敲のモデルを選ぶ
+2. 「モデルと料金」欄で文字起こしモデルを 6 つから選ぶ
    （最新料金と、この録音を処理したときの概算費用がその場で更新されます）
-3. 必要なら 言語・推敲スタイル・固有名詞 を設定する
-4. 「文字起こし開始」を押す（進捗バーが出ます）
-5. 「文字起こし」タブと「推敲版」タブに結果が表示される
-6. 画面上で直接編集でき、「両方をファイルに保存」で書き出せる
+3. 「API キー」欄に、選んだ会社のキーを入れる
+   （OpenAI 以外を選ぶと、その会社のキー欄が自動で出ます）
+4. 必要なら 言語・推敲スタイル・固有名詞 を設定する
+5. 「文字起こし開始」を押す（進捗バーが出ます）
+6. 「文字起こし」タブと「推敲版」タブに結果が表示される
+7. 画面上で直接編集でき、「両方をファイルに保存」で書き出せる
 
 ## 使い方（CLI）
 
@@ -226,7 +255,8 @@ GUI ではキー欄に貼り付けて「このPCに保存」にチェックを�
 python -m audio_transcriber --list-models              # 最新料金でモデルを比較
 python -m audio_transcriber 会議.mp3
 python -m audio_transcriber 録音.wav -o 出力 --language ja --style article
-python -m audio_transcriber 長時間.mp3 --model gpt-4o-mini-transcribe --polish-model gpt-5-nano
+python -m audio_transcriber 長時間.mp3 --model groq/whisper-large-v3-turbo   # 最安
+python -m audio_transcriber 会議.mp3 --model gemini/gemini-3.1-flash-lite --no-polish
 ```
 
 主なオプション:
@@ -241,7 +271,7 @@ python -m audio_transcriber 長時間.mp3 --model gpt-4o-mini-transcribe --polis
 | `--no-polish` | 推敲版を作らない | 作る |
 | `--max-seconds` | 1 リクエストあたりの最大音声長（秒） | 900 |
 | `--print` | 結果を標準出力にも表示 | しない |
-| `--model` / `--polish-model` | 使うモデル（`--list-models` で料金比較） | `gpt-transcribe` / `gpt-5.6-sol` |
+| `--model` / `--polish-model` | 使うモデル。`会社/モデル名` 形式も可（`--list-models` で料金比較） | `gpt-transcribe` / `gpt-5.6-sol` |
 | `--list-models` | 選べるモデルと最新料金を表示して終了 | - |
 | `--offline-prices` | 料金の取得をスキップ（キャッシュ／参考価格を使う） | 取得する |
 
@@ -285,6 +315,8 @@ Python のインストール不要で、ダブルクリック起動できる単�
 - 料金は公開価格表から取得した参考値です。最終的な価格は OpenAI の公式ページが正です
 - 話者の区別（誰が話したか）は既定では付きません。必要なら
   `--model gpt-4o-transcribe-diarize` を指定してください
+- 推敲は OpenAI のモデルのみ対応です（文字起こしは 6 社から選べます）
+- Gemini は音声をリクエストに直接載せるため、分割は 13MB 単位になります
 - 音質が極端に悪い録音や、強い訛り・複数人の同時発話では誤認識が残ります
 - 推敲は内容を変えませんが、誤変換の修正は文脈からの推測です。重要な数値や
   固有名詞は元の文字起こし側と突き合わせて確認してください

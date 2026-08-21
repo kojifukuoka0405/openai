@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from . import providers
 from .config import CONFIG_DIR
 
 PRICE_URL = (
@@ -34,7 +35,9 @@ CACHE_PATH = CONFIG_DIR / "prices.json"
 FETCH_TIMEOUT = 8.0
 
 # 見積りに使う換算係数（おおよその値）
-AUDIO_TOKENS_PER_MINUTE = 2400   # 音声 1 分あたりの音声トークン数
+AUDIO_TOKENS_PER_MINUTE = 2400   # 音声 1 分あたりの音声トークン数（OpenAI 系）
+# プロバイダごとの音声トークン数の違い（Gemini は 32 トークン/秒）
+AUDIO_TOKENS_PER_MINUTE_BY_PROVIDER = {"gemini": 1920}
 CHARS_PER_MINUTE = 300           # 日本語の話し言葉の 1 分あたり文字数
 TOKENS_PER_CHAR = 0.8            # 日本語 1 文字あたりのトークン数
 POLISH_OUTPUT_FACTOR = 1.6       # 推敲の出力トークン（推論分を含む）の係数
@@ -47,17 +50,39 @@ class ModelInfo:
 
     name: str
     kind: str                     # "transcribe" または "polish"
-    note: str                     # 画面に出す短い説明
+    note: str                     # 画面に出す短い説明（用途）
+
+    @property
+    def provider(self) -> str:
+        return providers.provider_of(self.name)
+
+    @property
+    def provider_label(self) -> str:
+        return providers.PROVIDERS[self.provider].label
 
 
-# 文字起こしの候補（この中から実際の価格で安い順に選抜する）
+# 文字起こしの候補（各社横断）。この中から実際の価格で安い順に選抜する
 TRANSCRIBE_MODELS = [
-    ModelInfo("gpt-transcribe", "transcribe", "最高精度・推奨"),
-    ModelInfo("gpt-4o-mini-transcribe", "transcribe", "軽量・低コスト"),
+    # OpenAI
+    ModelInfo("gpt-transcribe", "transcribe", "最高精度・迷ったらこれ"),
+    ModelInfo("gpt-4o-mini-transcribe", "transcribe", "OpenAI の低コスト版"),
     ModelInfo("gpt-4o-transcribe", "transcribe", "高精度"),
     ModelInfo("whisper-1", "transcribe", "従来モデル・実績豊富"),
-    ModelInfo("gpt-4o-transcribe-diarize", "transcribe", "話者分離あり"),
+    ModelInfo("gpt-4o-transcribe-diarize", "transcribe", "話者分離（誰の発言か）"),
+    # Groq（Whisper をホスティング。桁違いに安い）
+    ModelInfo("groq/whisper-large-v3-turbo", "transcribe", "最安・高速"),
+    ModelInfo("groq/whisper-large-v3", "transcribe", "安い・Whisper 最上位"),
+    # Google Gemini（音声を直接理解。文脈に強い）
+    ModelInfo("gemini/gemini-3.1-flash-lite", "transcribe", "格安・多言語"),
+    ModelInfo("gemini/gemini-3.5-flash", "transcribe", "文脈理解に強い"),
+    # 文字起こし専業
+    ModelInfo("assemblyai/best", "transcribe", "専業ベンダの高精度モデル"),
+    ModelInfo("elevenlabs/scribe_v1", "transcribe", "専業・多言語に強い"),
+    ModelInfo("deepgram/nova-3", "transcribe", "専業・高速"),
 ]
+
+# UI に並べる文字起こしモデルの数
+TRANSCRIBE_CHOICES = 6
 
 # 推敲の候補
 POLISH_MODELS = [
@@ -85,6 +110,17 @@ BUILTIN_PRICES: Dict[str, dict] = {
     "gpt-4o-transcribe-diarize": {"input_cost_per_audio_token": 2.5e-06,
                                   "output_cost_per_token": 1e-05},
     "whisper-1": {"input_cost_per_second": 0.0001},
+    "groq/whisper-large-v3-turbo": {"input_cost_per_second": 1.1111e-05},
+    "groq/whisper-large-v3": {"input_cost_per_second": 3.0833e-05},
+    "gemini/gemini-3.1-flash-lite": {"input_cost_per_audio_token": 5e-07,
+                                     "input_cost_per_token": 2.5e-07,
+                                     "output_cost_per_token": 1.5e-06},
+    "gemini/gemini-3.5-flash": {"input_cost_per_audio_token": 1.5e-06,
+                                "input_cost_per_token": 1.5e-06,
+                                "output_cost_per_token": 9e-06},
+    "assemblyai/best": {"input_cost_per_second": 3.333e-05},
+    "elevenlabs/scribe_v1": {"input_cost_per_second": 6.1111e-05},
+    "deepgram/nova-3": {"input_cost_per_second": 7.1667e-05},
     "gpt-5.6-sol": {"input_cost_per_token": 5e-06, "output_cost_per_token": 3e-05},
     "gpt-5.6-terra": {"input_cost_per_token": 2e-06, "output_cost_per_token": 1.2e-05},
     "gpt-5.6-luna": {"input_cost_per_token": 2e-07, "output_cost_per_token": 1.2e-06},
@@ -137,7 +173,10 @@ class PriceTable:
             return per_second * 60
         per_audio_token = e.get("input_cost_per_audio_token") or e.get("input_cost_per_token")
         if per_audio_token:
-            return per_audio_token * AUDIO_TOKENS_PER_MINUTE
+            tokens = AUDIO_TOKENS_PER_MINUTE_BY_PROVIDER.get(
+                providers.provider_of(model), AUDIO_TOKENS_PER_MINUTE
+            )
+            return per_audio_token * tokens
         return None
 
     def polish_cost_per_mtok(self, model: str) -> Optional[tuple]:
@@ -261,15 +300,33 @@ def cheapest_models(table: PriceTable, kind: str, count: int = 3) -> List[ModelI
 
 
 def selectable_models(table: PriceTable, kind: str, default: str,
-                      count: int = 3) -> List[ModelInfo]:
-    """画面に出す選択肢＝「既定のモデル」＋「いま安い順に count 件」。"""
-    chosen: List[ModelInfo] = []
-    for model in [m for m in ALL_MODELS if m.kind == kind and m.name == default]:
-        chosen.append(model)
-    for model in cheapest_models(table, kind, count):
-        if all(model.name != m.name for m in chosen):
+                      count: Optional[int] = None) -> List[ModelInfo]:
+    """画面に出す選択肢を組み立てる。
+
+    文字起こしは「既定（最高精度）」＋「そのとき安い順」で `count` 件。
+    同じ会社ばかりにならないよう、まず 1 社 1 モデルずつ拾い、
+    枠が余ったら 2 つ目以降を足す。最安モデルは必ず入る。
+    """
+    if count is None:
+        count = TRANSCRIBE_CHOICES if kind == "transcribe" else 3
+
+    chosen: List[ModelInfo] = [
+        m for m in ALL_MODELS if m.kind == kind and m.name == default
+    ]
+    ranked = cheapest_models(table, kind, count=len(ALL_MODELS))
+
+    used_providers = {m.provider for m in chosen}
+    for pass_no in (1, 2):
+        for model in ranked:
+            if len(chosen) >= count:
+                break
+            if any(model.name == m.name for m in chosen):
+                continue
+            if pass_no == 1 and model.provider in used_providers:
+                continue
             chosen.append(model)
-    return chosen
+            used_providers.add(model.provider)
+    return chosen[:count]
 
 
 def format_price(table: PriceTable, model: ModelInfo) -> str:
@@ -285,9 +342,13 @@ def format_price(table: PriceTable, model: ModelInfo) -> str:
     return f"入力 ${rates[0]:.2f} / 出力 ${rates[1]:.2f}（100万トークン）"
 
 
-def format_choice(table: PriceTable, model: ModelInfo) -> str:
-    """コンボボックスなどに出す 1 行。"""
-    return f"{model.name}　｜　{format_price(table, model)}　｜　{model.note}"
+def format_choice(table: PriceTable, model: ModelInfo,
+                  api_keys: Optional[dict] = None) -> str:
+    """コンボボックスなどに出す 1 行。キー未設定なら印を付ける。"""
+    parts = [model.name, model.provider_label, format_price(table, model), model.note]
+    if model.kind == "transcribe" and providers.resolve_key(model.name, api_keys) is None:
+        parts.append("要APIキー")
+    return "　｜　".join(parts)
 
 
 def model_from_choice(choice: str) -> str:
@@ -322,12 +383,18 @@ def price_report(table: PriceTable) -> str:
     """CLI の --list-models で出す一覧。"""
     lines = [table.origin_label(), ""]
     lines.append("【文字起こしモデル】（音声 1 時間あたりの目安）")
-    for model in TRANSCRIBE_MODELS:
+    for model in sorted(
+        TRANSCRIBE_MODELS,
+        key=lambda m: table.transcribe_cost_per_minute(m.name) or float("inf"),
+    ):
         rate = table.transcribe_cost_per_minute(model.name)
         price = f"${rate * 60:>6.2f}" if rate is not None else "  不明 "
-        lines.append(f"  {model.name:<26} {price}   {model.note}")
-    cheap = cheapest_models(table, "transcribe")
-    lines.append("  → 現時点で安い順: " + " / ".join(m.name for m in cheap))
+        key_mark = "" if providers.resolve_key(model.name) else "  ※要APIキー"
+        lines.append(
+            f"  {model.name:<30} {model.provider_label:<14} {price}   {model.note}{key_mark}"
+        )
+    picked = selectable_models(table, "transcribe", "gpt-transcribe")
+    lines.append("  → アプリに表示される 6 つ: " + " / ".join(m.name for m in picked))
     lines.append("")
     lines.append("【推敲モデル】（100 万トークンあたり 入力 / 出力）")
     for model in POLISH_MODELS:

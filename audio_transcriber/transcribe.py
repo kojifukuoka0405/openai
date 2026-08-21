@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from . import audio
+from . import audio, providers
 from .audio import AudioChunk
 
 # 高精度モデルから順に試す（前のモデルが使えない環境でも動くように）
@@ -120,6 +120,24 @@ def _create_transcription(client, model: str, path: Path, params: dict) -> str:
     raise TranscriptionError("API がリクエストを受け付けませんでした。")
 
 
+def _openai_compatible_client(model: str, client, api_keys: Optional[dict]):
+    """OpenAI 互換エンドポイント（OpenAI 本体 / Groq）のクライアントを用意する。"""
+    provider = providers.get_provider(model)
+    if provider.key == providers.DEFAULT_PROVIDER and client is not None:
+        return client
+    key = providers.resolve_key(model, api_keys)
+    if not key:
+        raise TranscriptionError(providers.missing_key_message(model))
+    try:
+        from openai import OpenAI
+    except ImportError as exc:  # pragma: no cover - 依存未インストール時
+        raise TranscriptionError("openai パッケージが必要です: pip install openai") from exc
+    kwargs = {"api_key": key}
+    if provider.base_url:
+        kwargs["base_url"] = provider.base_url
+    return OpenAI(**kwargs)
+
+
 def transcribe_chunks(
     client,
     chunks: Sequence[AudioChunk],
@@ -130,13 +148,19 @@ def transcribe_chunks(
     use_server_chunking: bool = True,
     progress: Optional[ProgressFn] = None,
     allow_fallback: bool = True,
+    api_keys: Optional[dict] = None,
 ) -> Transcript:
-    """音声断片を順に文字起こしして 1 本のテキストにまとめる。"""
+    """音声断片を順に文字起こしして 1 本のテキストにまとめる。
+
+    モデル ID のプロバイダに応じて、OpenAI / Groq（OpenAI 互換）または
+    Gemini・ElevenLabs・Deepgram・AssemblyAI の REST を呼び分ける。
+    """
     if not chunks:
         raise TranscriptionError("文字起こしする音声がありません。")
 
     candidates = [model]
-    if allow_fallback:
+    # 自動フォールバックは OpenAI のモデルを選んでいるときだけ
+    if allow_fallback and providers.provider_of(model) == providers.DEFAULT_PROVIDER:
         candidates += [m for m in TRANSCRIBE_FALLBACKS if m != model]
 
     base: dict = {}
@@ -153,19 +177,42 @@ def transcribe_chunks(
     carry = (prompt or "").strip()
     active_model = candidates[0]
     tried: List[str] = []
+    clients: dict = {}
 
     index = 0
     while index < total:
         chunk = chunks[index]
-        params = dict(base)
-        # 話者分離モデルのときだけ、話者付きの応答形式を要求する
-        params["response_format"] = "diarized_json" if "diarize" in active_model else "json"
-        if carry:
-            params["prompt"] = carry[-CONTEXT_TAIL_CHARS:]
+        provider = providers.get_provider(active_model)
         if progress is not None:
             progress(index, total, f"文字起こし中 [{index + 1}/{total}] ({active_model})")
         try:
-            text = _create_transcription(client, active_model, chunk.path, params)
+            if provider.openai_compatible:
+                if provider.key not in clients:
+                    clients[provider.key] = _openai_compatible_client(
+                        active_model, client, api_keys
+                    )
+                params = dict(base)
+                # 話者分離モデルのときだけ、話者付きの応答形式を要求する
+                params["response_format"] = (
+                    "diarized_json" if "diarize" in active_model else "json"
+                )
+                if carry:
+                    params["prompt"] = carry[-CONTEXT_TAIL_CHARS:]
+                text = _create_transcription(
+                    clients[provider.key], providers.bare_model(active_model),
+                    chunk.path, params,
+                )
+            else:
+                key = providers.resolve_key(active_model, api_keys)
+                if not key:
+                    raise TranscriptionError(providers.missing_key_message(active_model))
+                text = providers.transcribe_chunk(
+                    active_model, chunk.path, key,
+                    language=language, keywords=keywords,
+                    context=carry[-CONTEXT_TAIL_CHARS:] if carry else None,
+                )
+        except TranscriptionError:
+            raise
         except Exception as exc:  # noqa: BLE001
             if _is_model_missing(exc) and active_model in candidates:
                 tried.append(active_model)
@@ -206,6 +253,7 @@ def transcribe_audio_file(
     prompt: Optional[str] = None,
     max_seconds: float = audio.DEFAULT_MAX_SECONDS,
     progress: Optional[ProgressFn] = None,
+    api_keys: Optional[dict] = None,
 ) -> Transcript:
     """音声ファイル 1 つを（必要なら分割して）文字起こしする。"""
     path = Path(path)
@@ -215,9 +263,13 @@ def transcribe_audio_file(
         if progress is not None:
             progress(0, 1, msg)
 
+    # 1 リクエストに載せられるサイズはプロバイダごとに違う
+    max_bytes = min(providers.get_provider(model).max_chunk_bytes, audio.SAFE_CHUNK_BYTES)
+
     with tempfile.TemporaryDirectory(prefix="audio_transcriber_") as tmp:
         chunks = audio.prepare_chunks(
-            path, Path(tmp), max_seconds=max_seconds, progress=notify
+            path, Path(tmp), max_bytes=max_bytes, max_seconds=max_seconds,
+            progress=notify,
         )
         if len(chunks) > 1:
             notify(f"{len(chunks)} 個に分割しました")
@@ -229,4 +281,5 @@ def transcribe_audio_file(
             keywords=keywords,
             prompt=prompt,
             progress=progress,
+            api_keys=api_keys,
         )

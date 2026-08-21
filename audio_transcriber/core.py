@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import audio, polish as polish_mod, transcribe as transcribe_mod
+from . import audio, polish as polish_mod, providers, transcribe as transcribe_mod
 from .config import resolve_api_key
 
 # 進捗コールバック: (進捗率 0-100, 100, メッセージ)
@@ -96,12 +96,23 @@ def transcribe_and_polish(
     client=None,
     api_key: Optional[str] = None,
     progress: Optional[ProgressFn] = None,
+    api_keys: Optional[Dict[str, str]] = None,
 ) -> Result:
-    """音声ファイルを文字起こしし、推敲版も作る。"""
+    """音声ファイルを文字起こしし、推敲版も作る。
+
+    文字起こしは選んだモデルのプロバイダ（OpenAI / Gemini / Groq …）を使い、
+    推敲は OpenAI を使う。必要なキーだけを要求する。
+    """
     options = options or Options()
     path = Path(path)
     audio.check_supported(path)
-    client = client or make_client(api_key)
+
+    # OpenAI のクライアントは「OpenAI で文字起こしする」か「推敲する」ときだけ要る
+    needs_openai = options.do_polish or (
+        providers.provider_of(options.transcribe_model) == providers.DEFAULT_PROVIDER
+    )
+    if client is None and needs_openai:
+        client = make_client(api_key or (api_keys or {}).get("openai"))
 
     if progress is not None:
         progress(0, 100, "音声を確認しています…")
@@ -114,6 +125,7 @@ def transcribe_and_polish(
         keywords=list(options.keywords) or None,
         max_seconds=options.max_seconds,
         progress=_scaled(progress, 2, TRANSCRIBE_SHARE * 100),
+        api_keys=api_keys,
     )
 
     if not transcript.text.strip():

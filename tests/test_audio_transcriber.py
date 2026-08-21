@@ -3,6 +3,8 @@
 API は呼ばず、合成した音声ファイルと偽クライアントで検証する。
 """
 
+import base64
+import io
 import json
 import wave
 from pathlib import Path
@@ -10,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from audio_transcriber import audio, core, polish, pricing, transcribe
+from audio_transcriber import audio, core, polish, pricing, providers, transcribe
 
 # --------------------------------------------------------------------------
 # 合成データ
@@ -455,6 +457,207 @@ def test_format_duration():
 
 
 # --------------------------------------------------------------------------
+# 各社プロバイダ
+# --------------------------------------------------------------------------
+
+class FakeHttp:
+    """urlopen を差し替えて、送ったリクエストを記録する。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.requests = []
+
+    def __call__(self, request, timeout=None):
+        self.requests.append(request)
+        payload = self.responses.pop(0)
+
+        class Response:
+            def read(self_inner):
+                return json.dumps(payload).encode("utf-8")
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+        return Response()
+
+
+def _install_http(monkeypatch, responses):
+    fake = FakeHttp(responses)
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake)
+    return fake
+
+
+def test_provider_of_and_bare_model():
+    assert providers.provider_of("gpt-transcribe") == "openai"
+    assert providers.provider_of("groq/whisper-large-v3-turbo") == "groq"
+    assert providers.provider_of("gemini/gemini-3.1-flash-lite") == "gemini"
+    assert providers.bare_model("gemini/gemini-3.1-flash-lite") == "gemini-3.1-flash-lite"
+    assert providers.bare_model("gpt-transcribe") == "gpt-transcribe"
+    # 未知の接頭辞はモデル名の一部として扱う
+    assert providers.provider_of("my-model/v2") == "openai"
+
+
+def test_gemini_request_and_response(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "a.mp3", 5)
+    fake = _install_http(monkeypatch, [
+        {"candidates": [{"content": {"parts": [{"text": "こんにちは"}]}}]}
+    ])
+    text = providers.transcribe_chunk(
+        "gemini/gemini-3.1-flash-lite", src, "KEY", language="ja", keywords=["Claude"]
+    )
+    assert text == "こんにちは"
+
+    request = fake.requests[0]
+    assert "gemini-3.1-flash-lite:generateContent" in request.full_url
+    assert request.get_header("X-goog-api-key") == "KEY"
+    body = json.loads(request.data.decode("utf-8"))
+    parts = body["contents"][0]["parts"]
+    assert "文字起こし" in parts[0]["text"]
+    assert "Claude" in parts[0]["text"]                 # 固有名詞を指示に載せる
+    assert parts[1]["inline_data"]["mime_type"] == "audio/mpeg"
+    assert base64.b64decode(parts[1]["inline_data"]["data"]) == src.read_bytes()
+
+
+def test_gemini_empty_response_raises(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "a.mp3", 5)
+    _install_http(monkeypatch, [{"promptFeedback": {"blockReason": "SAFETY"}}])
+    with pytest.raises(providers.ProviderError):
+        providers.transcribe_chunk("gemini/gemini-3.5-flash", src, "KEY")
+
+
+def test_elevenlabs_multipart(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "b.mp3", 5)
+    fake = _install_http(monkeypatch, [{"text": "hello world"}])
+    assert providers.transcribe_chunk(
+        "elevenlabs/scribe_v1", src, "KEY", language="ja"
+    ) == "hello world"
+
+    request = fake.requests[0]
+    assert request.full_url.endswith("/v1/speech-to-text")
+    assert request.get_header("Xi-api-key") == "KEY"
+    assert "multipart/form-data" in request.get_header("Content-type")
+    body = request.data
+    assert b'name="model_id"' in body and b"scribe_v1" in body
+    assert b'name="language_code"' in body
+    assert b'filename="b.mp3"' in body
+    assert src.read_bytes() in body
+
+
+def test_deepgram_query_and_body(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "c.mp3", 5)
+    fake = _install_http(monkeypatch, [
+        {"results": {"channels": [{"alternatives": [{"transcript": "テスト"}]}]}}
+    ])
+    assert providers.transcribe_chunk(
+        "deepgram/nova-3", src, "KEY", language="ja"
+    ) == "テスト"
+
+    request = fake.requests[0]
+    assert "model=nova-3" in request.full_url and "language=ja" in request.full_url
+    assert request.get_header("Authorization") == "Token KEY"
+    assert request.data == src.read_bytes()          # 生の音声をそのまま送る
+
+
+def test_assemblyai_upload_then_poll(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "d.mp3", 5)
+    fake = _install_http(monkeypatch, [
+        {"upload_url": "https://cdn.example/audio"},
+        {"id": "job-1", "status": "queued"},
+        {"status": "processing"},
+        {"status": "completed", "text": "できました"},
+    ])
+    monkeypatch.setattr(providers.time, "sleep", lambda _s: None)
+    assert providers.transcribe_chunk("assemblyai/best", src, "KEY") == "できました"
+
+    urls = [r.full_url for r in fake.requests]
+    assert urls[0].endswith("/v2/upload")
+    assert urls[1].endswith("/v2/transcript")
+    assert urls[2].endswith("/v2/transcript/job-1")
+    created = json.loads(fake.requests[1].data.decode("utf-8"))
+    assert created["audio_url"] == "https://cdn.example/audio"
+    assert created["speech_model"] == "best"
+    assert created["language_detection"] is True     # 言語未指定なら自動判定
+
+
+def test_assemblyai_error_status(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "e.mp3", 5)
+    _install_http(monkeypatch, [
+        {"upload_url": "u"}, {"id": "x"}, {"status": "error", "error": "壊れた音声"},
+    ])
+    monkeypatch.setattr(providers.time, "sleep", lambda _s: None)
+    with pytest.raises(providers.ProviderError, match="壊れた音声"):
+        providers.transcribe_chunk("assemblyai/best", src, "KEY")
+
+
+def test_http_error_surfaces_detail(tmp_path, monkeypatch):
+    src = make_mp3(tmp_path / "f.mp3", 5)
+
+    def raise_http(request, timeout=None):
+        raise providers.urllib.error.HTTPError(
+            request.full_url, 401, "Unauthorized", {}, io.BytesIO(b'{"error":"bad key"}')
+        )
+
+    monkeypatch.setattr(providers.urllib.request, "urlopen", raise_http)
+    with pytest.raises(providers.ProviderError, match="401"):
+        providers.transcribe_chunk("deepgram/nova-3", src, "KEY")
+
+
+def test_resolve_key_prefers_explicit_then_env(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+    assert providers.resolve_key("gemini/gemini-3.5-flash", {"gemini": "explicit"}) == "explicit"
+    assert providers.resolve_key("gemini/gemini-3.5-flash") == "env-key"
+    monkeypatch.delenv("GEMINI_API_KEY")
+    monkeypatch.setattr(providers, "PROVIDERS", dict(providers.PROVIDERS))
+    assert "Google Gemini" in providers.missing_key_message("gemini/gemini-3.5-flash")
+
+
+def test_transcribe_chunks_routes_to_other_provider(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_chunk(model_id, path, api_key, **kwargs):
+        calls.append((model_id, api_key, kwargs.get("context")))
+        return f"断片{len(calls)}"
+
+    monkeypatch.setattr(transcribe.providers, "transcribe_chunk", fake_chunk)
+    result = transcribe.transcribe_chunks(
+        None, _chunks(tmp_path, 2), model="gemini/gemini-3.1-flash-lite",
+        api_keys={"gemini": "KEY"},
+    )
+    assert result.text == "断片1\n断片2"
+    assert result.model == "gemini/gemini-3.1-flash-lite"
+    assert calls[0][1] == "KEY"
+    assert calls[0][2] is None            # 最初は文脈なし
+    assert calls[1][2] == "断片1"          # 直前の結果を引き継ぐ
+
+
+def test_transcribe_chunks_requires_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    monkeypatch.setattr(providers, "resolve_key", lambda *a, **k: None)
+    with pytest.raises(transcribe.TranscriptionError, match="Deepgram"):
+        transcribe.transcribe_chunks(
+            None, _chunks(tmp_path, 1), model="deepgram/nova-3"
+        )
+
+
+def test_groq_uses_openai_compatible_client(tmp_path, monkeypatch):
+    fake = FakeTranscriptions()
+    monkeypatch.setattr(
+        transcribe, "_openai_compatible_client",
+        lambda model, client, keys: FakeClient(fake),
+    )
+    result = transcribe.transcribe_chunks(
+        None, _chunks(tmp_path, 1), model="groq/whisper-large-v3-turbo",
+        api_keys={"groq": "KEY"},
+    )
+    assert result.text == "テキスト1"
+    # プロバイダ接頭辞を外した名前で呼ぶ
+    assert fake.calls[0]["model"] == "whisper-large-v3-turbo"
+
+
+# --------------------------------------------------------------------------
 # 料金
 # --------------------------------------------------------------------------
 
@@ -528,12 +731,27 @@ def test_price_conversions():
 def test_cheapest_models_are_sorted_by_price():
     table = _table()
     cheap = pricing.cheapest_models(table, "transcribe", 3)
-    assert [m.name for m in cheap] == [
-        "gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-4o-transcribe"
-    ]
+    prices = [table.transcribe_cost_per_minute(m.name) for m in cheap]
+    assert prices == sorted(prices)
+    assert cheap[0].name == "groq/whisper-large-v3-turbo"   # 現時点の最安
+
     cheap_polish = [m.name for m in pricing.cheapest_models(table, "polish", 3)]
     assert cheap_polish[0] == "gpt-5-nano"
     assert "gpt-5.6-sol" not in cheap_polish        # 最高品質＝最安ではない
+
+
+def test_transcribe_choices_are_six_across_providers():
+    table = _table()
+    models = pricing.selectable_models(table, "transcribe", "gpt-transcribe")
+    names = [m.name for m in models]
+
+    assert len(names) == pricing.TRANSCRIBE_CHOICES == 6
+    assert names[0] == "gpt-transcribe"                     # 既定（最高精度）は先頭
+    assert "groq/whisper-large-v3-turbo" in names           # 最安は必ず入る
+    assert any(m.provider == "gemini" for m in models)      # 他社モデルも並ぶ
+    assert len(names) == len(set(names))
+    # 1 社に偏らない（6 枠に 6 社）
+    assert len({m.provider for m in models}) == 6
 
 
 def test_selectable_models_include_default_and_cheap():
